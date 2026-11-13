@@ -1,0 +1,79 @@
+# Secrets and local environment settings
+.env
+.env.*
+!.env.example
+!.env.*.example
+secrets/
+**/credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python virtual environments and generated files
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Local uploads, runtime data, databases, and logs
+uploads/
+storage/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Downloaded model weights and checkpoints
+*.pt
+*.pth
+*.onnx
+*.h5
+*.keras
+*.ckpt
+*.safetensors
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+
+
+# --- Python / Backend ---
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+backend/.env
+
+# --- Node.js / Frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+.pnp
+.pnp.js
+
+# --- IDE & Hệ thống ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
