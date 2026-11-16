@@ -9,7 +9,7 @@ export interface Lab {
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
 
 export async function getLabs(): Promise<Lab[]> {
-  const response = await fetch(`${apiBaseUrl}/api/labs`)
+  const response = await fetch(`${apiBaseUrl}/api/v1/labs`)
   if (!response.ok) {
     throw new Error(`Backend trả về lỗi HTTP ${response.status}.`)
   }

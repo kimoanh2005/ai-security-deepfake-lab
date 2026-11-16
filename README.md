@@ -28,6 +28,17 @@ py -3.10 -m venv .venv
 
 Nếu máy đã cài Python 3.11 hoặc 3.12 thay vì 3.10, thay `py -3.10` bằng `py -3.11` hoặc `py -3.12`. Có thể gọi Python trong virtual environment trực tiếp như trên, không cần thay đổi Execution Policy của PowerShell.
 
+Tạo tệp cấu hình và khởi tạo CSDL (vẫn trong `backend`):
+
+```powershell
+Copy-Item .env.example .env
+# Mở .env, điền JWT_SECRET (chuỗi ngẫu nhiên >= 16 ký tự), ví dụ sinh bằng:
+.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+`.env` không được commit. Nếu đã chạy migration bản cũ trước đó, xóa `backend/storage/lab.db*` rồi chạy lại `alembic upgrade head` (các migration 0001/0002 đã được chỉnh sửa trước khi hợp nhất).
+
 ### 2. Cài frontend
 
 Trong cửa sổ PowerShell thứ hai:
@@ -46,12 +57,12 @@ Nếu thư mục dự án không có `package-lock.json`, chạy `npm install` t
 Từ cửa sổ backend, đang ở `backend`:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 - API: <http://127.0.0.1:8000>
 - Tài liệu API Swagger: <http://127.0.0.1:8000/docs>
-- Kiểm tra danh sách Lab: <http://127.0.0.1:8000/api/labs>
+- Kiểm tra danh sách Lab: <http://127.0.0.1:8000/api/v1/labs>
 
 ### Frontend
 
@@ -69,7 +80,7 @@ Với backend đang chạy, gọi API trực tiếp trong PowerShell:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/
-Invoke-RestMethod http://127.0.0.1:8000/api/labs
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/labs
 ```
 
 Sau đó mở frontend và kiểm tra:
@@ -98,7 +109,7 @@ npm run lint
 
 ## Phạm vi hiện tại và phối hợp tích hợp
 
-Backend hiện cung cấp `GET /`, `GET /api/labs`. Vì vậy Dashboard, danh sách Lab, điều hướng, trạng thái kết nối và trang thông tin là chức năng chạy thật; upload video, detector deepfake, chatbot Ollama, rate limiting, request log và lịch sử phiên chưa thể chạy từ giao diện cho đến khi các endpoint tương ứng được cung cấp. Trạng thái `active` từ `/api/labs` chỉ có nghĩa Lab được backend khai báo, không khẳng định chức năng Lab đã hoàn thiện.
+Backend hiện cung cấp `GET /`, `GET /api/v1/labs`. Vì vậy Dashboard, danh sách Lab, điều hướng, trạng thái kết nối và trang thông tin là chức năng chạy thật; upload video, detector deepfake, chatbot Ollama, rate limiting, request log và lịch sử phiên chưa thể chạy từ giao diện cho đến khi các endpoint tương ứng được cung cấp. Trạng thái `active` từ `/api/v1/labs` chỉ có nghĩa Lab được backend khai báo, không khẳng định chức năng Lab đã hoàn thiện.
 
 Hợp đồng danh sách hiện dùng JSON:
 

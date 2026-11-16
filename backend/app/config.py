@@ -1,4 +1,5 @@
 from pathlib import Path
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[1]  # thư mục backend/
@@ -7,13 +8,25 @@ BASE_DIR = Path(__file__).resolve().parents[1]  # thư mục backend/
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
 
-    jwt_secret: str                      # bắt buộc, thiếu là báo lỗi ngay
+    jwt_secret: str = Field(min_length=16)  # bắt buộc, thiếu hoặc quá ngắn là báo lỗi ngay
     jwt_expire_minutes: int = 60
     db_path: str = "./storage/lab.db"
     storage_dir: str = "./storage"
     cors_origins: str = "http://localhost:5173"
-    ollama_url: str = "http://127.0.0.1:11434"
+    # Ollama chạy trên Google Colab (SPEC D-18): địa chỉ đường hầm HTTPS, đổi mỗi phiên Colab, không commit.
+    ollama_url: str = ""
+    ollama_api_key: str = ""             # token gửi kèm lời gọi; không ghi log
+    ollama_allowed_hosts: str = "trycloudflare.com,ngrok-free.app"
     ollama_model: str = ""
+    ollama_connect_timeout: float = 5.0
+    ollama_read_timeout: float = 120.0
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _reject_placeholder_secret(cls, v: str) -> str:
+        if v.lower().startswith(("change", "your", "secret", "replace", "<")):
+            raise ValueError("JWT_SECRET đang là giá trị mẫu; hãy đặt chuỗi ngẫu nhiên dài (vd: python -c \"import secrets;print(secrets.token_urlsafe(48))\")")
+        return v
 
     @property
     def db_file(self) -> Path:

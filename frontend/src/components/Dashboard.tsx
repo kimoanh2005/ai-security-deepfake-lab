@@ -342,7 +342,7 @@ export default function Dashboard() {
         <div className="sidebar-bottom">
           <div className={`connection-card ${error ? 'connection-error' : ''}`}>
             <span className="connection-icon">{error ? <WifiOff size={16} /> : <Wifi size={16} />}</span>
-            <span><strong>{error ? 'Backend mất kết nối' : 'Backend API'}</strong><small>{error ? 'Kiểm tra dịch vụ' : 'FastAPI · /api/labs'}</small></span>
+            <span><strong>{error ? 'Backend mất kết nối' : 'Backend API'}</strong><small>{error ? 'Kiểm tra dịch vụ' : 'FastAPI · /api/v1/labs'}</small></span>
             <i className={error ? 'connection-dot offline' : 'connection-dot'} />
           </div>
           <div className="profile-chip"><span className="profile-avatar">S</span><span><strong>Security Lab</strong><small>Không gian học tập</small></span></div>
