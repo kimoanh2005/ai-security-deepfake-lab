@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     ollama_model: str = ""
     ollama_connect_timeout: float = 5.0
     ollama_read_timeout: float = 120.0
+    # Trần cứng cho Lab (SPEC 10.5): giá trị khởi đầu, cần đo trên máy thật.
+    max_frames: int = Field(default=24, ge=1)                 # số khung hình tối đa mỗi video (Deepfake)
+    max_pi_calls: int = Field(default=60, ge=1)               # số lần gọi mô hình tối đa mỗi experiment (FR-PI-09)
+    max_events_per_experiment: int = Field(default=200, ge=1)  # chống một Lab lỗi vòng lặp làm phình CSDL
+    max_result_bytes: int = Field(default=262144, ge=1024)    # kích thước tối đa result (G7), 256 KiB
 
     @field_validator("jwt_secret")
     @classmethod
