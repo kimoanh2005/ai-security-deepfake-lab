@@ -1,3 +1,4 @@
+from functools import lru_cache
 from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,7 +10,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
 
     jwt_secret: str = Field(min_length=16)  # bắt buộc, thiếu hoặc quá ngắn là báo lỗi ngay
-    jwt_expire_minutes: int = 60
+    jwt_expire_minutes: int = Field(default=60, ge=1)
+    login_rate_limit_per_minute: int = Field(default=10, ge=1)  # số lần thử đăng nhập/phút/IP
     db_path: str = "./storage/lab.db"
     storage_dir: str = "./storage"
     cors_origins: str = "http://localhost:5173"
@@ -41,4 +43,7 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """Đọc cấu hình lười (lần gọi đầu), để test dựng Settings riêng mà không cần .env."""
+    return Settings()

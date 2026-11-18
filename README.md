@@ -37,6 +37,14 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
+Nạp dữ liệu khởi tạo (4 Lab + tài khoản admin/user). Mật khẩu lấy từ `SEED_*_PASSWORD` trong `.env`; nếu để trống, lệnh sẽ in mật khẩu ngẫu nhiên MỘT LẦN, hãy lưu lại. Chạy lại nhiều lần vẫn an toàn:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.seed
+```
+
+Chạy test: `.\.venv\Scripts\python.exe -m pytest -q` (dùng CSDL tạm, không đụng `lab.db`).
+
 `.env` không được commit. Nếu đã chạy migration bản cũ trước đó, xóa `backend/storage/lab.db*` rồi chạy lại `alembic upgrade head` (các migration 0001/0002 đã được chỉnh sửa trước khi hợp nhất).
 
 ### 2. Cài frontend
