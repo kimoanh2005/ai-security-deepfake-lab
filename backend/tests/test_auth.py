@@ -6,13 +6,13 @@ import pytest
 from app.core.ratelimit import SlidingWindowLimiter
 from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
 
-URL = "/api/v1/auth/tokens"
+URL = "/api/v1/auth/login"
 
 
 def test_login_ok_returns_token_and_no_store(client, make_user):
     email, pw = make_user()
     r = client.post(URL, json={"email": email, "password": pw})
-    assert r.status_code == 201
+    assert r.status_code == 200
     body = r.json()
     assert body["token_type"] == "Bearer" and body["expires_in"] == 3600 and body["access_token"]
     assert r.headers["cache-control"] == "no-store"
@@ -21,7 +21,7 @@ def test_login_ok_returns_token_and_no_store(client, make_user):
 def test_email_is_case_insensitive(client, make_user):
     email, pw = make_user(email="reviewer1@lab.local")
     r = client.post(URL, json={"email": "  Reviewer1@LAB.local ", "password": pw})
-    assert r.status_code == 201
+    assert r.status_code == 200
 
 
 def test_wrong_password_unknown_email_and_disabled_look_identical(client, make_user):

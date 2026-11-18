@@ -66,8 +66,8 @@ def make_user(app):
 @pytest.fixture()
 def login(client):
     def _login(email, password):
-        r = client.post("/api/v1/auth/tokens", json={"email": email, "password": password})
-        assert r.status_code == 201, r.text
+        r = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+        assert r.status_code == 200, r.text
         return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
     return _login

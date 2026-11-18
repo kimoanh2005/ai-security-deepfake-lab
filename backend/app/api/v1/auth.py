@@ -1,4 +1,4 @@
-"""POST /auth/tokens (đăng nhập bằng email) và GET /users/me."""
+"""POST /auth/login (đăng nhập bằng email) và GET /users/me."""
 from __future__ import annotations
 
 import logging
@@ -20,13 +20,13 @@ security_log = logging.getLogger("app.security")
 
 
 @router.post(
-    "/auth/tokens",
-    status_code=201,
+    "/auth/login",
+    status_code=200,
     response_model=TokenResponse,
-    operation_id="create_token",
+    operation_id="login",
     dependencies=[Depends(rate_limit("login"))],
 )
-def create_token(
+def login(
     body: LoginRequest,
     request: Request,
     response: Response,

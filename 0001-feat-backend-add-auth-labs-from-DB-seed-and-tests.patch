@@ -1,0 +1,1510 @@
+From adb6fc3312dc5469ff9f53f267d679c753aefc05 Mon Sep 17 00:00:00 2001
+From: Viet <noreply@example.com>
+Date: Wed, 18 Nov 2026 00:08:57 +0000
+Subject: [PATCH] feat(backend): add auth, labs-from-DB, seed and tests
+
+- core: engine/session factories (no import side effects), lazy settings,
+  RFC 9457 problem+json errors, sliding-window login rate limit
+- auth: POST /api/v1/auth/tokens (bcrypt, HS256 JWT), GET /api/v1/users/me,
+  uniform 401 for unknown email / wrong password / disabled user
+- labs: GET /labs, GET /labs/{code}, PATCH /labs/{code} (admin) read from DB
+- seed: idempotent `python -m app.seed`, no default passwords in source
+- tests: 25 pytest cases (auth, labs, seed, migrations vs ORM, CORS)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01HGQ8x4gmTMDUUhzsnJ5EHj
+---
+ README.md                              |   8 ++
+ backend/.env.example                   |   7 ++
+ backend/app/api/v1/__init__.py         |   0
+ backend/app/api/v1/auth.py             |  50 +++++++++
+ backend/app/api/v1/labs.py             |  76 ++++++++++++++
+ backend/app/api/v1/router.py           |   7 ++
+ backend/app/config.py                  |   9 +-
+ backend/app/core/db.py                 |  50 +++++----
+ backend/app/core/errors.py             | 109 ++++++++++++++++++++
+ backend/app/core/query.py              |  33 ++++++
+ backend/app/core/ratelimit.py          |  74 ++++++++++++++
+ backend/app/core/security.py           |  56 ++++++++++
+ backend/app/deps.py                    |  55 ++++++++++
+ backend/app/main.py                    |  73 +++++++++----
+ backend/app/models/schemas/__init__.py |   0
+ backend/app/models/schemas/auth.py     |  32 ++++++
+ backend/app/models/schemas/labs.py     |  18 ++++
+ backend/app/seed.py                    |  99 ++++++++++++++++++
+ backend/app/services/catalog.py        |  24 +++++
+ backend/migrations/env.py              |  36 ++++---
+ backend/tests/__init__.py              |   0
+ backend/tests/conftest.py              |  73 +++++++++++++
+ backend/tests/test_auth.py             | 136 +++++++++++++++++++++++++
+ backend/tests/test_labs.py             | 102 +++++++++++++++++++
+ backend/tests/test_migrations.py       |  48 +++++++++
+ backend/tests/test_seed.py             |  52 ++++++++++
+ 26 files changed, 1168 insertions(+), 59 deletions(-)
+ create mode 100644 backend/app/api/v1/__init__.py
+ create mode 100644 backend/app/api/v1/auth.py
+ create mode 100644 backend/app/api/v1/labs.py
+ create mode 100644 backend/app/api/v1/router.py
+ create mode 100644 backend/app/core/errors.py
+ create mode 100644 backend/app/core/query.py
+ create mode 100644 backend/app/core/ratelimit.py
+ create mode 100644 backend/app/core/security.py
+ create mode 100644 backend/app/deps.py
+ create mode 100644 backend/app/models/schemas/__init__.py
+ create mode 100644 backend/app/models/schemas/auth.py
+ create mode 100644 backend/app/models/schemas/labs.py
+ create mode 100644 backend/app/seed.py
+ create mode 100644 backend/app/services/catalog.py
+ create mode 100644 backend/tests/__init__.py
+ create mode 100644 backend/tests/conftest.py
+ create mode 100644 backend/tests/test_auth.py
+ create mode 100644 backend/tests/test_labs.py
+ create mode 100644 backend/tests/test_migrations.py
+ create mode 100644 backend/tests/test_seed.py
+
+diff --git a/README.md b/README.md
+index 6a7d23d..4029920 100644
+--- a/README.md
++++ b/README.md
+@@ -37,6 +37,14 @@ Copy-Item .env.example .env
+ .\.venv\Scripts\python.exe -m alembic upgrade head
+ ```
+ 
++Nạp dữ liệu khởi tạo (4 Lab + tài khoản admin/user). Mật khẩu lấy từ `SEED_*_PASSWORD` trong `.env`; nếu để trống, lệnh sẽ in mật khẩu ngẫu nhiên MỘT LẦN, hãy lưu lại. Chạy lại nhiều lần vẫn an toàn:
++
++```powershell
++.\.venv\Scripts\python.exe -m app.seed
++```
++
++Chạy test: `.\.venv\Scripts\python.exe -m pytest -q` (dùng CSDL tạm, không đụng `lab.db`).
++
+ `.env` không được commit. Nếu đã chạy migration bản cũ trước đó, xóa `backend/storage/lab.db*` rồi chạy lại `alembic upgrade head` (các migration 0001/0002 đã được chỉnh sửa trước khi hợp nhất).
+ 
+ ### 2. Cài frontend
+diff --git a/backend/.env.example b/backend/.env.example
+index f482a8e..e9b99b1 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -2,6 +2,7 @@
+ # Sinh khóa: python -c "import secrets; print(secrets.token_urlsafe(48))"
+ JWT_SECRET=
+ JWT_EXPIRE_MINUTES=60
++LOGIN_RATE_LIMIT_PER_MINUTE=10
+ DB_PATH=./storage/lab.db
+ STORAGE_DIR=./storage
+ CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+@@ -14,3 +15,9 @@ OLLAMA_ALLOWED_HOSTS=trycloudflare.com,ngrok-free.app
+ OLLAMA_MODEL=
+ OLLAMA_CONNECT_TIMEOUT=5
+ OLLAMA_READ_TIMEOUT=120
++
++# Chỉ dùng cho `python -m app.seed` (không bắt buộc). Bỏ trống mật khẩu thì seed sinh ngẫu nhiên và in một lần.
++SEED_ADMIN_EMAIL=admin@lab.local
++SEED_ADMIN_PASSWORD=
++SEED_USER_EMAIL=user@lab.local
++SEED_USER_PASSWORD=
+diff --git a/backend/app/api/v1/__init__.py b/backend/app/api/v1/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/api/v1/auth.py b/backend/app/api/v1/auth.py
+new file mode 100644
+index 0000000..0ae8ff2
+--- /dev/null
++++ b/backend/app/api/v1/auth.py
+@@ -0,0 +1,50 @@
++"""POST /auth/tokens (đăng nhập bằng email) và GET /users/me."""
++from __future__ import annotations
++
++import logging
++
++from fastapi import APIRouter, Depends, Request, Response
++from sqlalchemy import select
++from sqlalchemy.orm import Session
++
++from app.config import Settings
++from app.core.errors import AppError
++from app.core.ratelimit import client_ip, mask_ip, rate_limit
++from app.core.security import create_access_token, verify_password
++from app.deps import WWW_AUTH, get_current_user, get_db, get_settings_dep
++from app.models import User
++from app.models.schemas.auth import LoginRequest, TokenResponse, UserOut
++
++router = APIRouter(tags=["auth"])
++security_log = logging.getLogger("app.security")
++
++
++@router.post(
++    "/auth/tokens",
++    status_code=201,
++    response_model=TokenResponse,
++    operation_id="create_token",
++    dependencies=[Depends(rate_limit("login"))],
++)
++def create_token(
++    body: LoginRequest,
++    request: Request,
++    response: Response,
++    db: Session = Depends(get_db),
++    settings: Settings = Depends(get_settings_dep),
++):
++    user = db.scalar(select(User).where(User.email == body.email))
++    # Luôn băm/so khớp (kể cả khi không có user) để thời gian phản hồi không lộ tài khoản có tồn tại hay không.
++    password_ok = verify_password(body.password, user.password_hash if user else None)
++    if user is None or not password_ok or user.status != "active":
++        # Chỉ ghi IP đã che một phần; không ghi mật khẩu/email (SPEC 10.3).
++        security_log.warning("login_failed ip=%s", mask_ip(client_ip(request)))
++        raise AppError(401, "UNAUTHENTICATED", "Email hoặc mật khẩu không đúng.", headers=WWW_AUTH)
++    token, ttl = create_access_token(user.id, settings)
++    response.headers["Cache-Control"] = "no-store"
++    return TokenResponse(access_token=token, expires_in=ttl)
++
++
++@router.get("/users/me", response_model=UserOut, operation_id="get_current_user")
++def read_me(user: User = Depends(get_current_user)):
++    return UserOut(id=user.id, email=user.email, full_name=user.full_name, role=user.role, created_at=user.created_at)
+diff --git a/backend/app/api/v1/labs.py b/backend/app/api/v1/labs.py
+new file mode 100644
+index 0000000..6eac26f
+--- /dev/null
++++ b/backend/app/api/v1/labs.py
+@@ -0,0 +1,76 @@
++"""GET /labs, GET /labs/{lab}, PATCH /labs/{lab} (admin)."""
++from __future__ import annotations
++
++import logging
++from typing import Any
++
++from fastapi import APIRouter, Depends, Request
++from sqlalchemy import case, func, select
++from sqlalchemy.orm import Session
++
++from app.core.errors import AppError
++from app.core.query import PageParams, collection, reject_unknown_query
++from app.deps import get_current_user, get_db, require_admin
++from app.models import Lab, User
++from app.models.schemas.labs import LabPatch
++from app.services.catalog import LEGACY_IDS
++
++router = APIRouter(prefix="/labs", tags=["labs"])
++security_log = logging.getLogger("app.security")
++
++
++def lab_out(lab: Lab) -> dict[str, Any]:
++    # `id` số là trường tạm để không phá frontend hiện tại (deprecated); định danh chính thức là `code`.
++    # Chỉ liệt kê `links` của tài nguyên đã có thật; thêm scenarios/cases/experiments khi endpoint tồn tại.
++    return {
++        "id": LEGACY_IDS.get(lab.code),
++        "code": lab.code,
++        "name": lab.name,
++        "description": lab.description,
++        "status": lab.status,
++        "enabled": bool(lab.enabled),
++        "links": {"self": f"/api/v1/labs/{lab.code}"},
++    }
++
++
++def _get_lab(db: Session, code: str) -> Lab:
++    lab = db.scalar(select(Lab).where(Lab.code == code))
++    if lab is None:
++        raise AppError(404, "NOT_FOUND", "Không tìm thấy Lab.")
++    return lab
++
++
++@router.get("", operation_id="list_labs")
++def list_labs(
++    request: Request,
++    params: PageParams = Depends(),
++    db: Session = Depends(get_db),
++    _user: User = Depends(get_current_user),
++):
++    reject_unknown_query(request, {"page", "page_size"})
++    total = db.scalar(select(func.count()).select_from(Lab)) or 0
++    # Thứ tự ổn định theo danh mục (Lab seed cùng mili-giây nên created_at không đủ phân biệt); Lab ngoài danh mục xếp sau.
++    catalog_order = case(LEGACY_IDS, value=Lab.code, else_=len(LEGACY_IDS) + 1)
++    rows = db.scalars(
++        select(Lab).order_by(catalog_order, Lab.created_at, Lab.code).offset(params.offset).limit(params.page_size)
++    )
++    return collection([lab_out(r) for r in rows], params, total)
++
++
++@router.get("/{code}", operation_id="get_lab")
++def get_lab(code: str, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
++    return lab_out(_get_lab(db, code))
++
++
++@router.patch("/{code}", operation_id="update_lab")
++def update_lab(code: str, body: LabPatch, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
++    lab = _get_lab(db, code)
++    changes = body.model_dump(exclude_none=True)
++    if "enabled" in changes:
++        lab.enabled = 1 if changes["enabled"] else 0
++    if "status" in changes:
++        lab.status = changes["status"]
++    db.commit()
++    # Sự kiện bảo mật/vận hành ghi ra log ứng dụng (D-09), không có bảng riêng.
++    security_log.info("lab_toggled by=%s lab=%s changes=%s", admin.id, lab.code, changes)
++    return lab_out(lab)
+diff --git a/backend/app/api/v1/router.py b/backend/app/api/v1/router.py
+new file mode 100644
+index 0000000..14da84e
+--- /dev/null
++++ b/backend/app/api/v1/router.py
+@@ -0,0 +1,7 @@
++from fastapi import APIRouter
++
++from app.api.v1 import auth, labs
++
++api_router = APIRouter(prefix="/api/v1")
++api_router.include_router(auth.router)
++api_router.include_router(labs.router)
+diff --git a/backend/app/config.py b/backend/app/config.py
+index 56b6b58..6cbd871 100644
+--- a/backend/app/config.py
++++ b/backend/app/config.py
+@@ -1,3 +1,4 @@
++from functools import lru_cache
+ from pathlib import Path
+ from pydantic import Field, field_validator
+ from pydantic_settings import BaseSettings, SettingsConfigDict
+@@ -9,7 +10,8 @@ class Settings(BaseSettings):
+     model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
+ 
+     jwt_secret: str = Field(min_length=16)  # bắt buộc, thiếu hoặc quá ngắn là báo lỗi ngay
+-    jwt_expire_minutes: int = 60
++    jwt_expire_minutes: int = Field(default=60, ge=1)
++    login_rate_limit_per_minute: int = Field(default=10, ge=1)  # số lần thử đăng nhập/phút/IP
+     db_path: str = "./storage/lab.db"
+     storage_dir: str = "./storage"
+     cors_origins: str = "http://localhost:5173"
+@@ -41,4 +43,7 @@ class Settings(BaseSettings):
+         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+ 
+ 
+-settings = Settings()
+\ No newline at end of file
++@lru_cache
++def get_settings() -> Settings:
++    """Đọc cấu hình lười (lần gọi đầu), để test dựng Settings riêng mà không cần .env."""
++    return Settings()
+diff --git a/backend/app/core/db.py b/backend/app/core/db.py
+index 7fb3c72..59f29ed 100644
+--- a/backend/app/core/db.py
++++ b/backend/app/core/db.py
+@@ -1,26 +1,8 @@
+-from sqlalchemy import MetaData, create_engine, event
+-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+-
+-from app.config import settings
+-
+-settings.storage_path.mkdir(parents=True, exist_ok=True)
+-
+-engine = create_engine(
+-    f"sqlite:///{settings.db_file}",
+-    connect_args={"check_same_thread": False},  # worker thread dùng chung engine
+-)
+-
+-
+-@event.listens_for(engine, "connect")
+-def _sqlite_pragmas(dbapi_conn, _):
+-    cur = dbapi_conn.cursor()
+-    cur.execute("PRAGMA journal_mode=WAL")
+-    cur.execute("PRAGMA foreign_keys=ON")
+-    cur.execute("PRAGMA busy_timeout=5000")
+-    cur.close()
+-
++from pathlib import Path
+ 
+-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
++from sqlalchemy import MetaData, create_engine, event
++from sqlalchemy.engine import Engine
++from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+ 
+ # Đặt tên cố định cho ràng buộc: SQLite sửa bảng bằng "batch" cần tên, và migration/ORM phải khớp nhau.
+ # CHECK dùng tên đầy đủ do người viết đặt (ví dụ ck_experiments_state).
+@@ -35,3 +17,27 @@ NAMING_CONVENTION = {
+ 
+ class Base(DeclarativeBase):
+     metadata = MetaData(naming_convention=NAMING_CONVENTION)
++
++
++def _sqlite_pragmas(dbapi_conn, _record) -> None:
++    cur = dbapi_conn.cursor()
++    cur.execute("PRAGMA journal_mode=WAL")
++    cur.execute("PRAGMA foreign_keys=ON")
++    cur.execute("PRAGMA busy_timeout=5000")
++    cur.close()
++
++
++def make_engine(db_file: Path | str) -> Engine:
++    """Tạo engine SQLite cho một tệp CSDL (tạo thư mục cha nếu thiếu). Không có tác dụng phụ khi import module."""
++    path = Path(db_file)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    engine = create_engine(
++        f"sqlite:///{path}",
++        connect_args={"check_same_thread": False},  # worker thread dùng chung engine
++    )
++    event.listen(engine, "connect", _sqlite_pragmas)
++    return engine
++
++
++def make_session_factory(engine: Engine) -> sessionmaker[Session]:
++    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+diff --git a/backend/app/core/errors.py b/backend/app/core/errors.py
+new file mode 100644
+index 0000000..bc38183
+--- /dev/null
++++ b/backend/app/core/errors.py
+@@ -0,0 +1,109 @@
++"""Lỗi theo RFC 9457 (application/problem+json) với `code` ổn định cho frontend (API-01 mục 4.3)."""
++from __future__ import annotations
++
++import logging
++from typing import Any
++
++from fastapi import FastAPI, Request
++from fastapi.exceptions import RequestValidationError
++from fastapi.responses import JSONResponse
++from starlette.exceptions import HTTPException as StarletteHTTPException
++
++log = logging.getLogger("app.errors")
++
++PROBLEM_JSON = "application/problem+json"
++
++_TITLES = {
++    400: "Yêu cầu không hợp lệ",
++    401: "Chưa xác thực",
++    403: "Không đủ quyền",
++    404: "Không tìm thấy",
++    405: "Phương thức không được hỗ trợ",
++    406: "Định dạng không được hỗ trợ",
++    409: "Xung đột trạng thái",
++    422: "Dữ liệu không hợp lệ",
++    429: "Quá nhiều yêu cầu",
++    500: "Lỗi nội bộ",
++    503: "Dịch vụ chưa sẵn sàng",
++}
++
++_DEFAULT_CODES = {
++    401: "UNAUTHENTICATED",
++    403: "FORBIDDEN",
++    404: "NOT_FOUND",
++    405: "METHOD_NOT_ALLOWED",
++    406: "NOT_ACCEPTABLE",
++}
++
++
++class AppError(Exception):
++    def __init__(
++        self,
++        status: int,
++        code: str,
++        detail: str,
++        *,
++        errors: list[dict[str, Any]] | None = None,
++        headers: dict[str, str] | None = None,
++    ) -> None:
++        super().__init__(detail)
++        self.status = status
++        self.code = code
++        self.detail = detail
++        self.errors = errors
++        self.headers = headers or {}
++
++
++def problem(
++    status: int,
++    code: str,
++    detail: str,
++    *,
++    request: Request | None = None,
++    errors: list[dict[str, Any]] | None = None,
++    headers: dict[str, str] | None = None,
++) -> JSONResponse:
++    body: dict[str, Any] = {
++        "type": f"urn:lab:problem:{code.lower().replace('_', '-')}",
++        "title": _TITLES.get(status, "Lỗi"),
++        "status": status,
++        "detail": detail,
++    }
++    if request is not None:
++        body["instance"] = request.url.path
++    body["code"] = code
++    if errors:
++        body["errors"] = errors
++    return JSONResponse(body, status_code=status, media_type=PROBLEM_JSON, headers=headers)
++
++
++def _loc_to_field(loc: tuple) -> str:
++    return ".".join(str(p) for p in loc if p not in ("body", "query", "path"))
++
++
++def install_error_handlers(app: FastAPI) -> None:
++    @app.exception_handler(AppError)
++    async def _app_error(request: Request, exc: AppError):
++        return problem(exc.status, exc.code, exc.detail, request=request, errors=exc.errors, headers=exc.headers)
++
++    @app.exception_handler(RequestValidationError)
++    async def _validation(request: Request, exc: RequestValidationError):
++        details = exc.errors()
++        # JSON hỏng cú pháp → 400; sai schema/khoảng giá trị → 422. Không đưa giá trị đầu vào vào phản hồi
++        # (có thể chứa mật khẩu).
++        if any(d.get("type") == "json_invalid" for d in details):
++            return problem(400, "MALFORMED_REQUEST", "Nội dung yêu cầu không phải JSON hợp lệ.", request=request)
++        errors = [{"field": _loc_to_field(d["loc"]), "message": d["msg"]} for d in details]
++        return problem(422, "VALIDATION_ERROR", "Dữ liệu gửi lên không hợp lệ.", request=request, errors=errors)
++
++    @app.exception_handler(StarletteHTTPException)
++    async def _http(request: Request, exc: StarletteHTTPException):
++        code = _DEFAULT_CODES.get(exc.status_code, "HTTP_ERROR")
++        detail = _TITLES.get(exc.status_code, "Lỗi")
++        return problem(exc.status_code, code, detail, request=request, headers=dict(exc.headers or {}))
++
++    @app.exception_handler(Exception)
++    async def _unhandled(request: Request, exc: Exception):
++        # Chi tiết chỉ ghi log, không trả cho client (không lộ stack trace).
++        log.exception("Unhandled error on %s %s", request.method, request.url.path)
++        return problem(500, "INTERNAL_ERROR", "Lỗi nội bộ. Vui lòng thử lại sau.", request=request)
+diff --git a/backend/app/core/query.py b/backend/app/core/query.py
+new file mode 100644
+index 0000000..099df17
+--- /dev/null
++++ b/backend/app/core/query.py
+@@ -0,0 +1,33 @@
++"""Tham số truy vấn dùng chung: phân trang và từ chối tham số lạ (API-01 mục 7)."""
++from __future__ import annotations
++
++from typing import Any
++
++from fastapi import Query, Request
++
++from app.core.errors import AppError
++
++
++def reject_unknown_query(request: Request, allowed: set[str]) -> None:
++    unknown = sorted(set(request.query_params) - allowed)
++    if unknown:
++        raise AppError(
++            422,
++            "VALIDATION_ERROR",
++            "Tham số truy vấn không được hỗ trợ.",
++            errors=[{"field": k, "message": "Tham số không được hỗ trợ."} for k in unknown],
++        )
++
++
++class PageParams:
++    def __init__(self, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> None:
++        self.page = page
++        self.page_size = page_size
++
++    @property
++    def offset(self) -> int:
++        return (self.page - 1) * self.page_size
++
++
++def collection(items: list[Any], params: PageParams, total: int) -> dict[str, Any]:
++    return {"items": items, "page": params.page, "page_size": params.page_size, "total": total}
+diff --git a/backend/app/core/ratelimit.py b/backend/app/core/ratelimit.py
+new file mode 100644
+index 0000000..e1037de
+--- /dev/null
++++ b/backend/app/core/ratelimit.py
+@@ -0,0 +1,74 @@
++"""Giới hạn tần suất theo cửa sổ trượt, trong bộ nhớ (đủ cho 1 tiến trình / demo cục bộ)."""
++from __future__ import annotations
++
++import math
++import threading
++import time
++from collections import defaultdict, deque
++from typing import Callable
++
++from fastapi import Request, Response
++
++from app.core.errors import AppError
++
++
++class SlidingWindowLimiter:
++    def __init__(self, limit: int, window_seconds: int = 60, clock: Callable[[], float] = time.monotonic) -> None:
++        self.limit = limit
++        self.window = window_seconds
++        self._clock = clock
++        self._hits: dict[str, deque[float]] = defaultdict(deque)
++        self._lock = threading.Lock()
++
++    def hit(self, key: str) -> tuple[bool, int, int]:
++        """Trả về (được_phép, còn_lại, giây_chờ_nếu_bị_chặn)."""
++        now = self._clock()
++        with self._lock:
++            q = self._hits[key]
++            while q and now - q[0] >= self.window:
++                q.popleft()
++            if len(q) >= self.limit:
++                return False, 0, max(1, math.ceil(self.window - (now - q[0])))
++            q.append(now)
++            return True, self.limit - len(q), 0
++
++    def reset(self) -> None:
++        with self._lock:
++            self._hits.clear()
++
++
++def client_ip(request: Request) -> str:
++    return request.client.host if request.client else "unknown"
++
++
++def mask_ip(ip: str) -> str:
++    """Che một phần IP khi ghi log (SPEC 10.3)."""
++    if ":" in ip:  # IPv6
++        parts = ip.split(":")
++        return ":".join(parts[:2]) + ":*"
++    parts = ip.split(".")
++    return ".".join(parts[:2]) + ".*.*" if len(parts) == 4 else "unknown"
++
++
++def rate_limit(name: str):
++    """Dependency: dùng limiter `name` trong app.state.limiters."""
++
++    def dependency(request: Request, response: Response) -> None:
++        limiter: SlidingWindowLimiter = request.app.state.limiters[name]
++        ok, remaining, retry = limiter.hit(client_ip(request))
++        if not ok:
++            raise AppError(
++                429,
++                "RATE_LIMITED",
++                "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
++                headers={
++                    "Retry-After": str(retry),
++                    "RateLimit-Limit": str(limiter.limit),
++                    "RateLimit-Remaining": "0",
++                    "RateLimit-Reset": str(retry),
++                },
++            )
++        response.headers["RateLimit-Limit"] = str(limiter.limit)
++        response.headers["RateLimit-Remaining"] = str(remaining)
++
++    return dependency
+diff --git a/backend/app/core/security.py b/backend/app/core/security.py
+new file mode 100644
+index 0000000..f6479f4
+--- /dev/null
++++ b/backend/app/core/security.py
+@@ -0,0 +1,56 @@
++"""Băm mật khẩu (bcrypt) và JWT (HS256)."""
++from __future__ import annotations
++
++import datetime as dt
++from functools import lru_cache
++
++import bcrypt
++import jwt
++
++from app.config import Settings
++
++ALLOWED_ALGORITHMS = ["HS256"]
++BCRYPT_MAX_BYTES = 72  # bcrypt chỉ dùng 72 byte đầu → từ chối mật khẩu dài hơn thay vì cắt ngầm
++DEFAULT_ROUNDS = 12
++
++
++def hash_password(password: str, rounds: int = DEFAULT_ROUNDS) -> str:
++    raw = password.encode("utf-8")
++    if len(raw) > BCRYPT_MAX_BYTES:
++        raise ValueError(f"Mật khẩu dài tối đa {BCRYPT_MAX_BYTES} byte.")
++    return bcrypt.hashpw(raw, bcrypt.gensalt(rounds=rounds)).decode("ascii")
++
++
++@lru_cache
++def _dummy_hash() -> str:
++    # Băm giả để thời gian xử lý của "không có user" gần bằng "sai mật khẩu".
++    return hash_password("dummy-password-for-timing")
++
++
++def verify_password(password: str, password_hash: str | None) -> bool:
++    raw = password.encode("utf-8")
++    target = (password_hash or _dummy_hash()).encode("ascii")
++    try:
++        ok = bcrypt.checkpw(raw[:BCRYPT_MAX_BYTES], target)
++    except ValueError:
++        return False
++    return ok and password_hash is not None and len(raw) <= BCRYPT_MAX_BYTES
++
++
++def create_access_token(user_id: str, settings: Settings) -> tuple[str, int]:
++    now = dt.datetime.now(dt.timezone.utc)
++    ttl = settings.jwt_expire_minutes * 60
++    payload = {"sub": user_id, "iat": now, "exp": now + dt.timedelta(seconds=ttl)}
++    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256"), ttl
++
++
++def decode_access_token(token: str, settings: Settings) -> str | None:
++    """Trả về user_id hoặc None nếu token sai/hết hạn."""
++    try:
++        data = jwt.decode(
++            token, settings.jwt_secret, algorithms=ALLOWED_ALGORITHMS, options={"require": ["exp", "sub"]}
++        )
++    except jwt.PyJWTError:
++        return None
++    sub = data.get("sub")
++    return sub if isinstance(sub, str) else None
+diff --git a/backend/app/deps.py b/backend/app/deps.py
+new file mode 100644
+index 0000000..e105ee8
+--- /dev/null
++++ b/backend/app/deps.py
+@@ -0,0 +1,55 @@
++"""Dependency của FastAPI: phiên DB, người dùng hiện tại, kiểm tra vai trò (Cổng 1)."""
++from __future__ import annotations
++
++from typing import Iterator
++
++from fastapi import Depends, Request
++from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
++from sqlalchemy.orm import Session
++
++from app.config import Settings
++from app.core.errors import AppError
++from app.core.security import decode_access_token
++from app.models import User
++
++_bearer = HTTPBearer(auto_error=False)
++WWW_AUTH = {"WWW-Authenticate": "Bearer"}
++
++
++def get_settings_dep(request: Request) -> Settings:
++    return request.app.state.settings
++
++
++def get_db(request: Request) -> Iterator[Session]:
++    with request.app.state.session_factory() as session:
++        yield session
++
++
++def _unauthenticated() -> AppError:
++    return AppError(401, "UNAUTHENTICATED", "Thiếu, sai hoặc hết hạn token.", headers=WWW_AUTH)
++
++
++def get_current_user(
++    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
++    db: Session = Depends(get_db),
++    settings: Settings = Depends(get_settings_dep),
++) -> User:
++    if creds is None or creds.scheme.lower() != "bearer":
++        raise _unauthenticated()
++    user_id = decode_access_token(creds.credentials, settings)
++    user = db.get(User, user_id) if user_id else None
++    if user is None or user.status != "active":
++        raise _unauthenticated()
++    return user
++
++
++def require_role(*roles: str):
++    def dependency(user: User = Depends(get_current_user)) -> User:
++        if user.role not in roles:
++            raise AppError(403, "FORBIDDEN", "Bạn không có quyền thực hiện thao tác này.")
++        return user
++
++    return dependency
++
++
++require_admin = require_role("admin")
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 2692cf9..0fa3f4e 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -1,29 +1,60 @@
+-from fastapi import FastAPI
++import logging
++from contextlib import asynccontextmanager
++
++from fastapi import FastAPI, Request
+ from fastapi.middleware.cors import CORSMiddleware
+ 
+-from app.config import settings
++from app.api.v1.router import api_router
++from app.config import Settings, get_settings
++from app.core.db import make_engine, make_session_factory
++from app.core.errors import install_error_handlers
++from app.core.ratelimit import SlidingWindowLimiter
++
++logging.getLogger("app").setLevel(logging.INFO)
++
++EXPOSED_HEADERS = ["Location", "Retry-After", "ETag", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"]
++
++
++def create_app(settings: Settings | None = None) -> FastAPI:
++    """App factory: test dựng được app với Settings và DB tạm; chạy thật dùng `app` ở cuối tệp."""
++    settings = settings or get_settings()
++    engine = make_engine(settings.db_file)
++
++    @asynccontextmanager
++    async def lifespan(_app: FastAPI):
++        settings.storage_path.mkdir(parents=True, exist_ok=True)
++        yield
++        engine.dispose()
++
++    app = FastAPI(title="AI Security & Deepfake Lab API", version="1.0.0", lifespan=lifespan)
++    app.state.settings = settings
++    app.state.engine = engine
++    app.state.session_factory = make_session_factory(engine)
++    app.state.limiters = {"login": SlidingWindowLimiter(settings.login_rate_limit_per_minute, 60)}
++
++    app.add_middleware(
++        CORSMiddleware,
++        allow_origins=settings.cors_list,
++        allow_credentials=True,
++        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
++        allow_headers=["Authorization", "Content-Type", "Accept", "If-None-Match", "If-Match", "Idempotency-Key"],
++        expose_headers=EXPOSED_HEADERS,
++    )
+ 
+-app = FastAPI(title="AI Security & Deepfake Lab API", version="1.0.0")
++    @app.middleware("http")
++    async def _security_headers(request: Request, call_next):
++        response = await call_next(request)
++        response.headers.setdefault("X-Content-Type-Options", "nosniff")
++        return response
+ 
+-app.add_middleware(
+-    CORSMiddleware,
+-    allow_origins=settings.cors_list,
+-    allow_credentials=True,
+-    allow_methods=["*"],
+-    allow_headers=["*"],
+-)
++    install_error_handlers(app)
++    app.include_router(api_router)
+ 
++    @app.get("/")
++    def root():
++        return {"message": "AI Security & Deepfake Lab Backend đang hoạt động!"}
+ 
+-@app.get("/")
+-def root():
+-    return {"message": "AI Security & Deepfake Lab Backend đang hoạt động!"}
++    return app
+ 
+ 
+-@app.get("/api/v1/labs")
+-def get_labs():
+-    return [
+-        {"id": 1, "name": "Deepfake & Identity Spoofing", "status": "active"},
+-        {"id": 2, "name": "Prompt Injection trên Chatbot", "status": "active"},
+-        {"id": 3, "name": "API Security & Rate Limiting", "status": "active"},
+-        {"id": 4, "name": "Data Poisoning (Nâng cao)", "status": "planned"},
+-    ]
+\ No newline at end of file
++app = create_app()
+diff --git a/backend/app/models/schemas/__init__.py b/backend/app/models/schemas/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/models/schemas/auth.py b/backend/app/models/schemas/auth.py
+new file mode 100644
+index 0000000..5692e66
+--- /dev/null
++++ b/backend/app/models/schemas/auth.py
+@@ -0,0 +1,32 @@
++from pydantic import BaseModel, ConfigDict, Field, field_validator
++
++
++class LoginRequest(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++
++    email: str = Field(min_length=3, max_length=254)
++    password: str = Field(min_length=1, max_length=128)
++
++    @field_validator("email")
++    @classmethod
++    def _normalize_email(cls, v: str) -> str:
++        # Chuẩn hóa chữ thường như cột users.email. Không dùng EmailStr vì nó từ chối tên miền
++        # dành riêng như .local (tài khoản mẫu @lab.local).
++        v = v.strip().lower()
++        if "@" not in v or v.startswith("@") or v.endswith("@"):
++            raise ValueError("email không hợp lệ")
++        return v
++
++
++class TokenResponse(BaseModel):
++    access_token: str
++    token_type: str = "Bearer"
++    expires_in: int
++
++
++class UserOut(BaseModel):
++    id: str
++    email: str
++    full_name: str
++    role: str
++    created_at: str
+diff --git a/backend/app/models/schemas/labs.py b/backend/app/models/schemas/labs.py
+new file mode 100644
+index 0000000..b5e1961
+--- /dev/null
++++ b/backend/app/models/schemas/labs.py
+@@ -0,0 +1,18 @@
++from typing import Literal
++
++from pydantic import BaseModel, ConfigDict, model_validator
++
++
++class LabPatch(BaseModel):
++    """Chỉ admin; chỉ các trường được phép đổi (SPEC FR-LAB-03)."""
++
++    model_config = ConfigDict(extra="forbid")
++
++    status: Literal["real", "simulated", "planned"] | None = None
++    enabled: bool | None = None
++
++    @model_validator(mode="after")
++    def _not_empty(self):
++        if self.status is None and self.enabled is None:
++            raise ValueError("Cần ít nhất một trường: status hoặc enabled")
++        return self
+diff --git a/backend/app/seed.py b/backend/app/seed.py
+new file mode 100644
+index 0000000..3888df9
+--- /dev/null
++++ b/backend/app/seed.py
+@@ -0,0 +1,99 @@
++"""Nạp dữ liệu khởi tạo. Idempotent: chạy nhiều lần không trùng và không ghi đè thay đổi của admin.
++
++    python -m app.seed
++
++Mật khẩu lấy từ SEED_ADMIN_PASSWORD / SEED_USER_PASSWORD (>= 8 ký tự). Nếu thiếu thì sinh ngẫu nhiên
++và in ra MỘT LẦN khi tạo tài khoản (không bao giờ có mật khẩu mặc định trong mã nguồn).
++Email mặc định: admin@lab.local, user@lab.local (đổi bằng SEED_ADMIN_EMAIL / SEED_USER_EMAIL).
++"""
++from __future__ import annotations
++
++import os
++import secrets
++from typing import Callable, Mapping
++
++from sqlalchemy import inspect, select
++from sqlalchemy.engine import Engine
++from sqlalchemy.orm import Session
++
++from app.config import get_settings
++from app.core.db import make_engine, make_session_factory
++from app.core.security import DEFAULT_ROUNDS, hash_password
++from app.models import Lab, User
++from app.services.catalog import LAB_CATALOG, lab_id_for
++
++MIN_PASSWORD_LEN = 8
++
++
++def ensure_labs(db: Session) -> int:
++    """Chỉ thêm Lab còn thiếu; không sửa enabled/status của Lab đã có (admin có thể đã đổi)."""
++    existing = set(db.scalars(select(Lab.code)))
++    added = 0
++    for item in LAB_CATALOG:
++        if item["code"] in existing:
++            continue
++        db.add(
++            Lab(
++                id=lab_id_for(item["code"]),
++                code=item["code"],
++                name=item["name"],
++                description=item["description"],
++                service_key=item["code"],
++                status=item["status"],
++                enabled=item["enabled"],
++            )
++        )
++        added += 1
++    db.commit()
++    return added
++
++
++def ensure_user(db: Session, email: str, role: str, full_name: str, password: str, rounds: int = DEFAULT_ROUNDS) -> bool:
++    """Tạo user nếu chưa có email này. Trả True nếu vừa tạo. Không đụng tài khoản đã tồn tại."""
++    email = email.strip().lower()
++    if db.scalar(select(User).where(User.email == email)):
++        return False
++    db.add(User(email=email, password_hash=hash_password(password, rounds), full_name=full_name, role=role))
++    db.commit()
++    return True
++
++
++def run_seed(
++    engine: Engine,
++    env: Mapping[str, str],
++    *,
++    out: Callable[[str], None] = print,
++    rounds: int = DEFAULT_ROUNDS,
++) -> None:
++    tables = set(inspect(engine).get_table_names())
++    if not {"users", "labs"} <= tables:
++        raise SystemExit("CSDL chưa có bảng. Chạy trước: python -m alembic upgrade head")
++
++    accounts = (
++        (env.get("SEED_ADMIN_EMAIL") or "admin@lab.local", "admin", "Quản trị", "SEED_ADMIN_PASSWORD"),
++        (env.get("SEED_USER_EMAIL") or "user@lab.local", "user", "Người dùng", "SEED_USER_PASSWORD"),
++    )
++    with make_session_factory(engine)() as db:
++        out(f"Lab thêm mới: {ensure_labs(db)}")
++        for email, role, name, env_key in accounts:
++            given = env.get(env_key)
++            if given and len(given) < MIN_PASSWORD_LEN:
++                raise SystemExit(f"{env_key} phải có ít nhất {MIN_PASSWORD_LEN} ký tự.")
++            password = given or secrets.token_urlsafe(12)
++            if ensure_user(db, email, role, name, password, rounds):
++                shown = "" if given else f"  mật khẩu (chỉ hiện một lần): {password}"
++                out(f"Tạo {role}: {email.strip().lower()}{shown}")
++            else:
++                out(f"Đã có {role}: {email.strip().lower()}")
++
++
++def main() -> None:
++    engine = make_engine(get_settings().db_file)
++    try:
++        run_seed(engine, os.environ)
++    finally:
++        engine.dispose()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/app/services/catalog.py b/backend/app/services/catalog.py
+new file mode 100644
+index 0000000..2fba281
+--- /dev/null
++++ b/backend/app/services/catalog.py
+@@ -0,0 +1,24 @@
++"""Danh mục Lab mặc định (dùng cho seed). Không import service nào để tránh phụ thuộc vòng.
++
++`status` là TRẦN của result_kind (real > simulated > planned). Các Lab đang là bản khung nên để `simulated`;
++chỉ nâng lên `real` khi TV2–TV4 tích hợp thật và có bằng chứng.
++`enabled` chỉ là mặc định khi seed lần đầu; sau đó admin đổi qua PATCH /labs/{code}.
++"""
++from __future__ import annotations
++
++LAB_CATALOG: list[dict] = [
++    {"legacy_id": 1, "code": "deepfake", "name": "Deepfake & Identity Spoofing", "status": "simulated", "enabled": 1,
++     "description": "Phân tích video để tìm tín hiệu bất thường (nghiên cứu, không kết luận tuyệt đối)."},
++    {"legacy_id": 2, "code": "prompt_injection", "name": "Prompt Injection trên Chatbot", "status": "simulated", "enabled": 1,
++     "description": "So sánh phản hồi mô hình trước/sau phòng thủ trong sandbox."},
++    {"legacy_id": 3, "code": "api_lab", "name": "API Security & Rate Limiting", "status": "simulated", "enabled": 1,
++     "description": "Mô phỏng lạm dụng API trên ứng dụng demo nội bộ, so sánh khi bật/tắt giới hạn tần suất."},
++    {"legacy_id": 4, "code": "poisoning", "name": "Data Poisoning (Nâng cao)", "status": "planned", "enabled": 0,
++     "description": "Dự kiến (ngoài phạm vi MVP)."},
++]
++
++LEGACY_IDS: dict[str, int] = {item["code"]: item["legacy_id"] for item in LAB_CATALOG}
++
++
++def lab_id_for(code: str) -> str:
++    return f"lab_{code}"
+diff --git a/backend/migrations/env.py b/backend/migrations/env.py
+index 0f1baae..ac52c4a 100644
+--- a/backend/migrations/env.py
++++ b/backend/migrations/env.py
+@@ -2,21 +2,20 @@ from logging.config import fileConfig
+ 
+ from alembic import context
+ 
+-from app.config import settings
+-from app.core.db import Base, engine
++from app.config import get_settings
++from app.core.db import Base, make_engine
+ import app.models  # noqa: F401  (để Alembic thấy các bảng)
+ 
+ config = context.config
+ if config.config_file_name is not None:
+-    fileConfig(config.config_file_name)
++    fileConfig(config.config_file_name, disable_existing_loggers=False)
+ 
+ target_metadata = Base.metadata
+-DB_URL = f"sqlite:///{settings.db_file}"
+ 
+ 
+ def run_migrations_offline() -> None:
+     context.configure(
+-        url=DB_URL,
++        url=f"sqlite:///{get_settings().db_file}",
+         target_metadata=target_metadata,
+         literal_binds=True,
+         render_as_batch=True,  # SQLite không sửa cột trực tiếp được
+@@ -25,18 +24,27 @@ def run_migrations_offline() -> None:
+         context.run_migrations()
+ 
+ 
++def _migrate(connection) -> None:
++    context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
++    with context.begin_transaction():
++        context.run_migrations()
++
++
+ def run_migrations_online() -> None:
+-    with engine.connect() as connection:
+-        context.configure(
+-            connection=connection,
+-            target_metadata=target_metadata,
+-            render_as_batch=True,
+-        )
+-        with context.begin_transaction():
+-            context.run_migrations()
++    # Test truyền sẵn kết nối qua config.attributes["connection"]; chạy bình thường thì dùng DB_PATH trong .env.
++    connection = config.attributes.get("connection")
++    if connection is not None:
++        _migrate(connection)
++        return
++    engine = make_engine(get_settings().db_file)
++    try:
++        with engine.connect() as conn:
++            _migrate(conn)
++    finally:
++        engine.dispose()
+ 
+ 
+ if context.is_offline_mode():
+     run_migrations_offline()
+ else:
+-    run_migrations_online()
+\ No newline at end of file
++    run_migrations_online()
+diff --git a/backend/tests/__init__.py b/backend/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/tests/conftest.py b/backend/tests/conftest.py
+new file mode 100644
+index 0000000..522b6c9
+--- /dev/null
++++ b/backend/tests/conftest.py
+@@ -0,0 +1,73 @@
++import os
++
++# Phải đặt trước khi import app.* (app.main dựng sẵn `app` dùng cấu hình từ môi trường).
++os.environ.setdefault("JWT_SECRET", "pytest-secret-0123456789abcdef")
++
++from pathlib import Path
++
++import pytest
++from alembic import command
++from alembic.config import Config
++from fastapi.testclient import TestClient
++
++from app.config import BASE_DIR, Settings
++from app.core.security import hash_password
++from app.main import create_app
++from app.models import User
++
++TEST_ROUNDS = 4  # bcrypt rẻ cho test
++
++
++def alembic_upgrade(engine) -> None:
++    cfg = Config(str(BASE_DIR / "alembic.ini"))
++    cfg.set_main_option("script_location", str(BASE_DIR / "migrations"))
++    with engine.begin() as conn:
++        cfg.attributes["connection"] = conn
++        command.upgrade(cfg, "head")
++
++
++@pytest.fixture()
++def settings(tmp_path: Path) -> Settings:
++    return Settings(
++        _env_file=None,
++        jwt_secret="pytest-secret-0123456789abcdef",
++        db_path=str(tmp_path / "lab.db"),
++        storage_dir=str(tmp_path / "storage"),
++        login_rate_limit_per_minute=1000,
++    )
++
++
++@pytest.fixture()
++def app(settings: Settings):
++    application = create_app(settings)
++    alembic_upgrade(application.state.engine)
++    yield application
++    application.state.engine.dispose()
++
++
++@pytest.fixture()
++def client(app):
++    with TestClient(app) as c:
++        yield c
++
++
++@pytest.fixture()
++def make_user(app):
++    def _make(email="user@lab.local", password="user-pass-123", role="user", status="active"):
++        with app.state.session_factory() as db:
++            db.add(User(email=email, password_hash=hash_password(password, TEST_ROUNDS),
++                        full_name=email.split("@")[0], role=role, status=status))
++            db.commit()
++        return email, password
++
++    return _make
++
++
++@pytest.fixture()
++def login(client):
++    def _login(email, password):
++        r = client.post("/api/v1/auth/tokens", json={"email": email, "password": password})
++        assert r.status_code == 201, r.text
++        return {"Authorization": f"Bearer {r.json()['access_token']}"}
++
++    return _login
+diff --git a/backend/tests/test_auth.py b/backend/tests/test_auth.py
+new file mode 100644
+index 0000000..01b5803
+--- /dev/null
++++ b/backend/tests/test_auth.py
+@@ -0,0 +1,136 @@
++import logging
++
++import jwt
++import pytest
++
++from app.core.ratelimit import SlidingWindowLimiter
++from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
++
++URL = "/api/v1/auth/tokens"
++
++
++def test_login_ok_returns_token_and_no_store(client, make_user):
++    email, pw = make_user()
++    r = client.post(URL, json={"email": email, "password": pw})
++    assert r.status_code == 201
++    body = r.json()
++    assert body["token_type"] == "Bearer" and body["expires_in"] == 3600 and body["access_token"]
++    assert r.headers["cache-control"] == "no-store"
++
++
++def test_email_is_case_insensitive(client, make_user):
++    email, pw = make_user(email="reviewer1@lab.local")
++    r = client.post(URL, json={"email": "  Reviewer1@LAB.local ", "password": pw})
++    assert r.status_code == 201
++
++
++def test_wrong_password_unknown_email_and_disabled_look_identical(client, make_user):
++    email, pw = make_user()
++    make_user(email="off@lab.local", status="disabled")
++    cases = [
++        {"email": email, "password": "sai-mat-khau"},
++        {"email": "nobody@lab.local", "password": pw},
++        {"email": "off@lab.local", "password": pw},
++    ]
++    responses = [client.post(URL, json=c) for c in cases]
++    for r in responses:
++        assert r.status_code == 401
++        assert r.headers["www-authenticate"] == "Bearer"
++        assert r.headers["content-type"].startswith("application/problem+json")
++        assert r.json()["code"] == "UNAUTHENTICATED"
++    assert len({r.text for r in responses}) == 1  # không lộ tài khoản có tồn tại hay không
++
++
++def test_login_failure_logged_without_secrets(client, make_user, caplog):
++    email, _ = make_user()
++    with caplog.at_level(logging.WARNING, logger="app.security"):
++        client.post(URL, json={"email": email, "password": "mat-khau-sai-12345"})
++    text = " ".join(r.getMessage() for r in caplog.records)
++    assert "login_failed" in text
++    assert "mat-khau-sai-12345" not in text and email not in text
++
++
++def test_login_validation_and_malformed_json(client):
++    assert client.post(URL, json={"email": "khong-hop-le", "password": "x"}).status_code == 422
++    assert client.post(URL, json={"email": "a@b.c"}).status_code == 422
++    assert client.post(URL, json={"email": "a@b.c", "password": "x", "extra": 1}).status_code == 422
++    r = client.post(URL, content=b"{not json", headers={"Content-Type": "application/json"})
++    assert r.status_code == 400 and r.json()["code"] == "MALFORMED_REQUEST"
++
++
++def test_validation_error_does_not_echo_password(client):
++    r = client.post(URL, json={"email": "khong-hop-le", "password": "BiMat-Khong-Duoc-Lo"})
++    assert r.status_code == 422 and "BiMat-Khong-Duoc-Lo" not in r.text
++    assert r.json()["errors"][0]["field"] == "email"
++
++
++def test_me_requires_token(client, make_user, login):
++    assert client.get("/api/v1/users/me").status_code == 401
++    assert client.get("/api/v1/users/me", headers={"Authorization": "Bearer abc.def.ghi"}).status_code == 401
++    assert client.get("/api/v1/users/me", headers={"Authorization": "Basic dXNlcjpwdw=="}).status_code == 401
++    email, pw = make_user()
++    r = client.get("/api/v1/users/me", headers=login(email, pw))
++    assert r.status_code == 200
++    me = r.json()
++    assert me["email"] == email and me["role"] == "user" and me["id"].startswith("usr_")
++    assert "password" not in r.text and "hash" not in r.text
++
++
++def test_token_of_disabled_or_deleted_user_is_rejected(client, app, make_user, login):
++    email, pw = make_user()
++    headers = login(email, pw)
++    with app.state.session_factory() as db:
++        from app.models import User
++        db.query(User).filter_by(email=email).update({"status": "disabled"})
++        db.commit()
++    assert client.get("/api/v1/users/me", headers=headers).status_code == 401
++
++
++def test_expired_and_forged_tokens_rejected(client, make_user, settings):
++    make_user()
++    me = "/api/v1/users/me"
++    expired = jwt.encode({"sub": "usr_x", "exp": 1}, settings.jwt_secret, algorithm="HS256")
++    forged = jwt.encode({"sub": "usr_x", "exp": 4102444800}, "khoa-khac-0123456789abcdef", algorithm="HS256")
++    none_alg = jwt.encode({"sub": "usr_x", "exp": 4102444800}, key=None, algorithm="none")
++    for t in (expired, forged, none_alg):
++        assert client.get(me, headers={"Authorization": f"Bearer {t}"}).status_code == 401
++
++
++def test_login_rate_limit(tmp_path, make_user):
++    from fastapi.testclient import TestClient
++    from tests.conftest import alembic_upgrade
++    from app.config import Settings
++    from app.main import create_app
++
++    s = Settings(_env_file=None, jwt_secret="pytest-secret-0123456789abcdef", db_path=str(tmp_path / "rl.db"),
++                 storage_dir=str(tmp_path / "st"), login_rate_limit_per_minute=3)
++    application = create_app(s)
++    alembic_upgrade(application.state.engine)
++    with TestClient(application) as c:
++        codes = [c.post(URL, json={"email": "a@b.c", "password": "x"}).status_code for _ in range(4)]
++        r = c.post(URL, json={"email": "a@b.c", "password": "x"})
++    assert codes == [401, 401, 401, 429]
++    assert r.status_code == 429 and int(r.headers["retry-after"]) >= 1 and r.json()["code"] == "RATE_LIMITED"
++
++
++def test_sliding_window_expires():
++    t = [0.0]
++    lim = SlidingWindowLimiter(2, 60, clock=lambda: t[0])
++    assert lim.hit("k")[0] and lim.hit("k")[0]
++    ok, _, retry = lim.hit("k")
++    assert not ok and retry == 60
++    t[0] = 61
++    assert lim.hit("k")[0]
++
++
++def test_password_hashing_rules(settings):
++    h = hash_password("mat-khau-tot", rounds=4)
++    assert h != "mat-khau-tot" and verify_password("mat-khau-tot", h)
++    assert not verify_password("khac", h)
++    assert not verify_password("bat-ky", None)  # không có user
++    with pytest.raises(ValueError):
++        hash_password("x" * 73, rounds=4)
++    long_h = hash_password("y" * 72, rounds=4)
++    assert not verify_password("y" * 72 + "z", long_h)  # không khớp nhờ cắt ngầm
++    token, ttl = create_access_token("usr_1", settings)
++    assert ttl == 3600 and decode_access_token(token, settings) == "usr_1"
+diff --git a/backend/tests/test_labs.py b/backend/tests/test_labs.py
+new file mode 100644
+index 0000000..06262b2
+--- /dev/null
++++ b/backend/tests/test_labs.py
+@@ -0,0 +1,102 @@
++import logging
++
++LABS = "/api/v1/labs"
++
++
++def _user_headers(make_user, login):
++    return login(*make_user())
++
++
++def _admin_headers(make_user, login):
++    return login(*make_user(email="admin@lab.local", password="admin-pass-123", role="admin"))
++
++
++def _seed(app):
++    from app.seed import ensure_labs
++    with app.state.session_factory() as db:
++        ensure_labs(db)
++
++
++def test_labs_require_auth(client, app):
++    _seed(app)
++    assert client.get(LABS).status_code == 401
++    assert client.get(f"{LABS}/deepfake").status_code == 401
++    assert client.patch(f"{LABS}/deepfake", json={"enabled": False}).status_code == 401
++
++
++def test_list_labs_from_db_shape(client, app, make_user, login):
++    _seed(app)
++    r = client.get(LABS, headers=_user_headers(make_user, login))
++    assert r.status_code == 200
++    body = r.json()
++    assert set(body) == {"items", "page", "page_size", "total"}
++    assert body["total"] == 4 and body["page"] == 1 and body["page_size"] == 20
++    by_code = {i["code"]: i for i in body["items"]}
++    assert list(by_code) == ["deepfake", "prompt_injection", "api_lab", "poisoning"]
++    assert by_code["poisoning"]["status"] == "planned" and by_code["poisoning"]["enabled"] is False
++    assert {i["status"] for i in body["items"]} <= {"real", "simulated", "planned"}
++    assert by_code["prompt_injection"]["id"] == 2  # id số tạm (deprecated)
++    assert by_code["deepfake"]["links"] == {"self": "/api/v1/labs/deepfake"}
++    assert r.headers["x-content-type-options"] == "nosniff"
++
++
++def test_pagination_and_unknown_params(client, app, make_user, login):
++    _seed(app)
++    h = _user_headers(make_user, login)
++    r = client.get(LABS, params={"page": 2, "page_size": 3}, headers=h).json()
++    assert [i["code"] for i in r["items"]] == ["poisoning"] and r["total"] == 4
++    assert client.get(LABS, params={"page_size": 101}, headers=h).status_code == 422
++    assert client.get(LABS, params={"page": 0}, headers=h).status_code == 422
++    r = client.get(LABS, params={"lab": "x"}, headers=h)
++    assert r.status_code == 422 and r.json()["errors"][0]["field"] == "lab"
++
++
++def test_get_lab_and_404(client, app, make_user, login):
++    _seed(app)
++    h = _user_headers(make_user, login)
++    assert client.get(f"{LABS}/api_lab", headers=h).json()["name"] == "API Security & Rate Limiting"
++    r = client.get(f"{LABS}/khong-co", headers=h)
++    assert r.status_code == 404 and r.json()["code"] == "NOT_FOUND"
++    assert r.headers["content-type"].startswith("application/problem+json")
++
++
++def test_patch_requires_admin_and_validates(client, app, make_user, login):
++    _seed(app)
++    user_h = _user_headers(make_user, login)
++    admin_h = _admin_headers(make_user, login)
++    r = client.patch(f"{LABS}/deepfake", json={"enabled": False}, headers=user_h)
++    assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN"
++    # quyền được kiểm tra trước khi kiểm tra thân yêu cầu
++    assert client.patch(f"{LABS}/deepfake", json={}, headers=user_h).status_code == 403
++    assert client.patch(f"{LABS}/deepfake", json={}, headers=admin_h).status_code == 422
++    assert client.patch(f"{LABS}/deepfake", json={"status": "active"}, headers=admin_h).status_code == 422
++    assert client.patch(f"{LABS}/deepfake", json={"name": "x"}, headers=admin_h).status_code == 422
++    assert client.patch(f"{LABS}/nope", json={"enabled": True}, headers=admin_h).status_code == 404
++
++
++def test_patch_updates_and_logs(client, app, make_user, login, caplog):
++    _seed(app)
++    admin_h = _admin_headers(make_user, login)
++    with caplog.at_level(logging.INFO, logger="app.security"):
++        r = client.patch(f"{LABS}/deepfake", json={"enabled": False, "status": "planned"}, headers=admin_h)
++    assert r.status_code == 200 and r.json()["enabled"] is False and r.json()["status"] == "planned"
++    assert any("lab_toggled" in rec.getMessage() and "deepfake" in rec.getMessage() for rec in caplog.records)
++    assert client.get(f"{LABS}/deepfake", headers=admin_h).json()["enabled"] is False  # đã lưu
++
++
++def test_method_not_allowed_has_allow_and_problem_json(client, make_user, login, app):
++    _seed(app)
++    h = _user_headers(make_user, login)
++    r = client.delete(f"{LABS}/deepfake", headers=h)
++    assert r.status_code == 405 and "allow" in r.headers and r.json()["code"] == "METHOD_NOT_ALLOWED"
++
++
++def test_cors_allows_only_configured_origin(client):
++    ok = client.options("/api/v1/labs", headers={"Origin": "http://localhost:5173",
++                                                 "Access-Control-Request-Method": "GET"})
++    assert ok.headers.get("access-control-allow-origin") == "http://localhost:5173"
++    bad = client.options("/api/v1/labs", headers={"Origin": "http://evil.example",
++                                                  "Access-Control-Request-Method": "GET"})
++    assert "access-control-allow-origin" not in bad.headers
++    r = client.get("/", headers={"Origin": "http://localhost:5173"})
++    assert "location" in r.headers.get("access-control-expose-headers", "").lower()
+diff --git a/backend/tests/test_migrations.py b/backend/tests/test_migrations.py
+new file mode 100644
+index 0000000..b71981c
+--- /dev/null
++++ b/backend/tests/test_migrations.py
+@@ -0,0 +1,48 @@
++import pytest
++from alembic import command
++from alembic.autogenerate import compare_metadata
++from alembic.config import Config
++from alembic.runtime.migration import MigrationContext
++from sqlalchemy import inspect, text
++from sqlalchemy.exc import IntegrityError
++
++from app.config import BASE_DIR
++from app.core.db import Base
++from app.models import Lab, User
++
++
++def _cfg(conn):
++    cfg = Config(str(BASE_DIR / "alembic.ini"))
++    cfg.set_main_option("script_location", str(BASE_DIR / "migrations"))
++    cfg.attributes["connection"] = conn
++    return cfg
++
++
++def test_upgrade_downgrade_upgrade_and_orm_matches(app):
++    eng = app.state.engine
++    assert {"users", "labs", "experiments", "lab_results", "experiment_events",
++            "media_assets", "prompt_cases", "prompt_runs"} <= set(inspect(eng).get_table_names())
++    with eng.begin() as conn:
++        diff = compare_metadata(MigrationContext.configure(conn), Base.metadata)
++    assert diff == [], diff
++    with eng.begin() as conn:
++        command.downgrade(_cfg(conn), "base")
++    assert set(inspect(eng).get_table_names()) <= {"alembic_version"}
++    with eng.begin() as conn:
++        command.upgrade(_cfg(conn), "head")
++    assert "users" in inspect(eng).get_table_names()
++
++
++def test_check_constraints_reject_bad_values(app):
++    with app.state.session_factory() as db:
++        db.add(Lab(code="x", name="x", service_key="x", status="active"))  # không thuộc real/simulated/planned
++        with pytest.raises(IntegrityError):
++            db.commit()
++        db.rollback()
++        with pytest.raises(IntegrityError):  # email phải chữ thường: bỏ qua validator ORM bằng SQL thô
++            db.execute(text("INSERT INTO users (id,email,password_hash,full_name,role,status,created_at,updated_at) "
++                            "VALUES ('u','A@B.C','h','n','user','active','t','t')"))
++        db.rollback()
++        db.add(User(email="  MixedCase@Lab.Local ", password_hash="h", full_name="n"))
++        db.commit()
++        assert db.query(User).one().email == "mixedcase@lab.local"
+diff --git a/backend/tests/test_seed.py b/backend/tests/test_seed.py
+new file mode 100644
+index 0000000..92df115
+--- /dev/null
++++ b/backend/tests/test_seed.py
+@@ -0,0 +1,52 @@
++from sqlalchemy import select
++
++from app.core.security import verify_password
++from app.models import Lab, User
++from app.seed import run_seed
++
++ENV = {"SEED_ADMIN_PASSWORD": "admin-pass-123", "SEED_USER_EMAIL": "Reviewer1@Lab.Local"}
++
++
++def test_seed_creates_and_is_idempotent(app):
++    out: list[str] = []
++    run_seed(app.state.engine, ENV, out=out.append, rounds=4)
++    with app.state.session_factory() as db:
++        assert db.scalar(select(Lab).where(Lab.code == "deepfake")).id == "lab_deepfake"
++        users = {u.email: u for u in db.scalars(select(User))}
++        assert set(users) == {"admin@lab.local", "reviewer1@lab.local"}  # email chữ thường
++        assert users["admin@lab.local"].role == "admin"
++        assert verify_password("admin-pass-123", users["admin@lab.local"].password_hash)
++        assert users["admin@lab.local"].id.startswith("usr_")
++    text = "\n".join(out)
++    assert "admin-pass-123" not in text  # mật khẩu do người dùng đặt thì không in ra
++    assert "chỉ hiện một lần" in text  # user không có biến → mật khẩu ngẫu nhiên in một lần
++
++    out2: list[str] = []
++    run_seed(app.state.engine, ENV, out=out2.append, rounds=4)
++    with app.state.session_factory() as db:
++        assert db.query(Lab).count() == 4 and db.query(User).count() == 2
++    assert "Lab thêm mới: 0" in out2 and all("Đã có" in line for line in out2[1:])
++
++
++def test_seed_does_not_override_admin_changes(app):
++    run_seed(app.state.engine, ENV, out=lambda _: None, rounds=4)
++    with app.state.session_factory() as db:
++        lab = db.scalar(select(Lab).where(Lab.code == "poisoning"))
++        lab.enabled, lab.status = 1, "simulated"
++        db.commit()
++    run_seed(app.state.engine, ENV, out=lambda _: None, rounds=4)
++    with app.state.session_factory() as db:
++        lab = db.scalar(select(Lab).where(Lab.code == "poisoning"))
++        assert (lab.enabled, lab.status) == (1, "simulated")
++
++
++def test_seed_rejects_short_password_and_missing_tables(app, tmp_path):
++    import pytest
++    from app.core.db import make_engine
++
++    with pytest.raises(SystemExit):
++        run_seed(app.state.engine, {"SEED_ADMIN_PASSWORD": "ngan"}, out=lambda _: None, rounds=4)
++    empty = make_engine(tmp_path / "empty.db")
++    with pytest.raises(SystemExit):
++        run_seed(empty, {}, out=lambda _: None)
++    empty.dispose()
+-- 
+2.43.0
+

@@ -118,7 +118,7 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
 |---|---|---|---|---|
 | FR-AUTH-01 | Đăng nhập bằng email/password (email lưu chữ thường, không phân biệt hoa/thường khi đăng nhập), trả JWT có thời hạn cấu hình được | M | SP A.5 | Sai mật khẩu → 401 + ghi log ứng dụng `login_failed` (không ghi mật khẩu); đúng → token |
 | FR-AUTH-02 | Mật khẩu lưu dạng băm có salt; không bao giờ trả về trong API | M | SP A.8 | Kiểm tra DB và phản hồi không chứa mật khẩu thô |
-| FR-AUTH-03 | Mọi endpoint `/api/v1/*` (trừ `POST /auth/tokens`, `GET /health`) yêu cầu token hợp lệ | M | SP A.5.1 | Không token → 401 |
+| FR-AUTH-03 | Mọi endpoint `/api/v1/*` (trừ `POST /auth/login`, `GET /health`) yêu cầu token hợp lệ | M | SP A.5.1 | Không token → 401 |
 | FR-AUTH-04 | Endpoint quản trị chỉ `admin` | M | D-05 | `user` gọi → 403 |
 | FR-AUTH-05 | Tài khoản mẫu tạo bằng `scripts/seed.py`; không có đăng ký công khai | M | D-06 | Chạy seed 2 lần không tạo trùng |
 
@@ -367,7 +367,7 @@ Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đ�
 
 | Tài nguyên | Phương thức chính |
 |---|---|
-| `auth/tokens`, `users/me` | `POST`, `GET` |
+| `auth/login`, `users/me` | `POST`, `GET` |
 | `labs`, `labs/{lab}/scenarios`, `labs/prompt_injection/cases` | `GET` (`PATCH` Lab: admin) |
 | `labs/{lab}/experiments` | `POST` (tạo, `202`) |
 | `experiments`, `experiments/{id}` | `GET` (+ `DELETE` admin) |
@@ -533,7 +533,7 @@ Dựa trên khoảng cách ở 1.1. **Giai đoạn 0** không phụ thuộc quy�
 | T-02 | Cập nhật `requirements.txt`: Alembic, thư viện JWT, băm mật khẩu, `httpx`, `pytest`; chốt phiên bản | — | 1 |
 | T-03 | `.env.example`; siết CORS; bắt buộc `JWT_SECRET` | — | 1 |
 | T-04 | Migration `0001` (5 bảng lõi) + seed Lab/tài khoản | D-05, D-06 | 1 |
-| T-05 | Auth + `require_role`; `POST /auth/tokens`, `GET /users/me` | T-04 | 1 |
+| T-05 | Auth + `require_role`; `POST /auth/login`, `GET /users/me` | T-04 | 1 |
 | T-06 | `GET /labs`, `GET /labs/{lab}` đọc từ DB, đổi `status`; **thống nhất với TV5** (API-01 mục 11.2) | MỞ-2 | 1 |
 | T-07 | `LabService`, `LabResult`, `result_guard`, `registry`; 4 stub trả `simulated` | D-10 | 1 |
 | T-08 | Orchestrator, queue, worker, vòng đời, `experiment_events`, xử lý khởi động lại | T-07 | 2 |
