@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | **Tài liệu** | SPEC-01 · Đặc tả yêu cầu và kiến trúc backend (hợp đồng API chi tiết: API-01) |
-| **Phiên bản** | 0.3 (bản nháp để nhóm xác nhận; Ollama của TV4 chạy trên Google Colab thay vì máy cục bộ — D-18) |
-| **Ngày** | 16/11/2026 |
+| **Phiên bản** | 0.4 (bản nháp để nhóm xác nhận; chốt chữ ký `LabService` theo bản cài đặt T-07) |
+| **Ngày** | 18/11/2026 |
 | **Người phụ trách** | TV1 (Trưởng nhóm, kiến trúc & backend) |
 | **Căn cứ** | Bản đề xuất sản phẩm (SP); báo cáo "AI Security và Deepfake" (1.3.2, 3.2.1–3.2.3); thiết kế backend v0 (Phần B); quét repo ngày 15/11/2026 |
 | **Trạng thái** | Các mục đánh dấu **[ĐỀ XUẤT]** là quyết định mặc định của TV1, chưa được nhóm xác nhận. Các mục **[MỞ]** cần nhóm quyết. |
 
-Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.2*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
+Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.3*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
 
 ---
 
@@ -251,7 +251,7 @@ Quy tắc: chỉ các chuyển trạng thái trên là hợp lệ; `done` và `f
 ### 5.3. Trình tự xử lý một yêu cầu chạy Lab
 
 1. **Cổng 1:** xác thực token → kiểm tra vai trò → rate limit API điều khiển → validate body (Pydantic) → kiểm tra Lab `enabled`.
-2. `service.validate(payload)` → trả payload đã chuẩn hóa hoặc ném `LabValidationError` (→ 422, không tạo experiment).
+2. `service.validate(payload, settings)` → trả payload đã chuẩn hóa hoặc ném `LabValidationError` (→ 422, không tạo experiment).
 3. Orchestrator tạo experiment `queued` (+ event `queued`), đẩy job, trả `202`.
 4. Worker: `running` → gọi `service.run(ctx, payload)` trong timeout.
 5. **Cổng 3 (result_guard):** kiểm tra `LabResult` (6.1). Đạt → orchestrator ghi `result_json` + `records` vào bảng nghiệp vụ trong **một giao dịch**, `done`. Không đạt → `failed` + `result_rejected`.
@@ -295,7 +295,9 @@ Kết quả chỉ được lưu `done` khi **tất cả** đúng:
 | G4 | Không chứa khóa `probability`, `accuracy`, `confidence_pct` ở mức kết quả khi chưa có bản ghi hiệu chuẩn | `{"accuracy": 0.97}` tự đặt |
 | G5 | Mỗi `components[i].kind` hợp lệ và `result_kind` = mức yếu nhất của các thành phần (6.3) | Không khớp |
 | G6 | `artifacts` là đường dẫn tương đối nằm trong `storage/` | `../../etc/x` |
-| G7 | Kích thước `result_json` ≤ giới hạn cấu hình | — |
+| G7 | Kích thước `result_json` ≤ giới hạn cấu hình (`MAX_RESULT_BYTES`), tuần tự hóa được thành JSON (không NaN) | — |
+
+Cài đặt (`app/services/guard.py`) còn hai kiểm tra bổ sung: `shape` (đúng kiểu `LabResult`) và `records` (chỉ ghi bảng/cột trong `RECORD_COLUMNS`; service không được tự đặt `task_violated` trừ khi kèm `judged_by='rule'` — FR-PI-05). Guard không ném ngoại lệ với đầu vào lạ: kết quả sai bị từ chối kèm lý do trong `lab_results.guard_details`.
 
 ### 6.2. Trần trạng thái
 
@@ -347,12 +349,13 @@ Mỗi bảng thêm bằng migration riêng; không sửa tay tệp `.db`.
 - `prompt_runs.task_violated`: **nullable**; `judged_by` ∈ {rule, human} hoặc NULL.
 - `media_assets.consent_ref`, `source`, `label`: NOT NULL.
 - Khóa ngoại bật (`PRAGMA foreign_keys=ON` ở mỗi kết nối).
+- Định danh mờ có tiền tố: `usr_`, `lab_`, `exp_`, `res_`, `med_` (`media_assets`), `case_` (`prompt_cases`), `run_` (`prompt_runs`).
 
 ---
 
 ## 8. Hợp đồng API
 
-Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.2** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
+Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.3** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
 
 ### 8.1. Nguyên tắc
 
@@ -386,35 +389,45 @@ Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đ�
 
 ### 9.1. `LabService`
 
+Đặt trong `app/services/base.py`. `LabResult` và `Component` là **dataclass** (không phải pydantic) để service sai nhãn vẫn dựng được đối tượng và `result_guard` là nơi duy nhất từ chối, kèm lý do.
+
 ```python
 ResultKind = Literal["real", "simulated", "planned"]
 
-class Component(BaseModel):
+@dataclass
+class Component:
     name: str
-    kind: ResultKind
+    kind: str                              # real | simulated | planned
     note: str | None = None
 
-class LabResult(BaseModel):
-    result_kind: ResultKind
+@dataclass
+class LabResult:
+    result_kind: str
     summary: str
     components: list[Component]            # bắt buộc, ≥ 1
-    metrics: dict = {}
-    artifacts: list[str] = []              # đường dẫn tương đối trong storage/
     limitations: list[str]                 # bắt buộc, không rỗng
-    records: dict[str, list[dict]] = {}    # dòng cho bảng nghiệp vụ (D-12), vd {"prompt_runs": [...]}
+    metrics: dict = field(default_factory=dict)
+    artifacts: list[str] = field(default_factory=list)   # đường dẫn tương đối trong storage/
+    records: dict[str, list[dict]] = field(default_factory=dict)  # dòng cho bảng nghiệp vụ (D-12)
 
-class RunContext(BaseModel):
+class RunContext:                          # orchestrator dựng; service chỉ dùng
+    settings: Settings
     experiment_id: str
-    storage_dir: str
-    # log(level, event_type, message, data=None) được inject lúc chạy
+    storage_dir: Path
+    def emit(self, level, event_type, message, data=None) -> None: ...  # ghi experiment_events (tối đa MAX_EVENTS_PER_EXPERIMENT)
+    def check(self) -> None: ...           # ném JobCancelled khi hết giờ hoặc bị hủy
 
 class LabService(Protocol):
-    lab_id: str
-    def validate(self, payload: dict) -> dict: ...          # trả payload chuẩn hóa, hoặc ném LabValidationError
-    def run(self, ctx: RunContext, payload: dict) -> LabResult: ...
+    code: str                              # khớp labs.code và catalog
+    def validate(self, payload: dict, settings: Settings) -> dict: ...  # trả payload chuẩn hóa, hoặc ném LabValidationError
+    def run(self, ctx: RunContext, payload: dict) -> LabResult: ...     # payload = giá trị validate đã trả
 ```
 
-Nghĩa vụ của người cài đặt: (1) không mở kết nối ra ngoài, trừ client Ollama dùng `OLLAMA_URL`/`OLLAMA_API_KEY` đã cấu hình (D-18); (2) luôn điền `limitations`; (3) không đủ điều kiện chạy thật thì trả nhãn thấp hơn, **không bịa số liệu**; (4) không ghi DB, dùng `records`; (5) dùng `ctx.log` thay vì `print`.
+`validate` nhận `settings` để đọc các trần (`MAX_PI_CALLS`, `MAX_FRAMES`…); lỗi trả `LabValidationError([{field, message}])`, orchestrator đổi thành 422 và **không** tạo experiment. `base.py` có sẵn `reject_unknown`, `is_code`, `is_int_in`, `require_object` cho việc này.
+
+**Quy ước `records`.** Chỉ bảng và cột trong `RECORD_COLUMNS` (hiện có `prompt_runs`: `case_code`, `attempt`, `defense`, `response`, `latency_ms`, `model_name`, `task_violated`, `judged_by`). Service dùng `case_code`; orchestrator tra `prompt_cases` để đổi sang `case_id` và tự thêm `id`, `experiment_id`, `created_at`. `task_violated` mặc định `None`; chỉ được đặt cùng `judged_by="rule"`. Giá trị `human` chỉ đến từ API chấm tay (FR-PI-06).
+
+Nghĩa vụ của người cài đặt: (1) không mở kết nối ra ngoài, trừ client Ollama dùng `OLLAMA_URL`/`OLLAMA_API_KEY` đã cấu hình (D-18); (2) luôn điền `limitations`; (3) không đủ điều kiện chạy thật thì trả nhãn thấp hơn, **không bịa số liệu**; `result_kind` bằng mức yếu nhất của `components` (D-10); (4) không ghi DB và không import `app.api`, `app.models`, `app.jobs`, dùng `records`; (5) dùng `ctx.emit` thay vì `print`; (6) gọi `ctx.check()` định kỳ trong vòng lặp dài để dừng sớm khi hết giờ.
 
 ### 9.2. TV1 ↔ TV5 (frontend)
 
@@ -495,6 +508,8 @@ Loại bảo mật: `login_failed`, `file_rejected`, `rate_limited`, `lab_toggle
 | `MAX_UPLOAD_MB`, `MAX_VIDEO_SECONDS`, `MAX_FRAMES` | giá trị khởi đầu, **cần đo trên máy thật** |
 | `MAX_API_LAB_REQUESTS` | 100 (khởi đầu) |
 | `MAX_PI_CALLS` | 60 (khởi đầu) |
+| `MAX_EVENTS_PER_EXPERIMENT` | 200 (khởi đầu); chặn một Lab lỗi vòng lặp làm phình CSDL |
+| `MAX_RESULT_BYTES` | 262144 (256 KiB); giới hạn G7 |
 | `JOB_TIMEOUT_<LAB>` | theo Lab, cần đo |
 
 ---
@@ -602,3 +617,4 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 | 0.1 | 15/11/2026 | Bản nháp đầu: phân tích hiện trạng, quyết định mặc định, yêu cầu, kiến trúc, hợp đồng, backlog |
 | 0.2 | 15/11/2026 | Chuyển API sang REST theo tài nguyên; tách hợp đồng API thành API-01; thêm D-13 đến D-17; mục 8 thành tóm tắt |
 | 0.3 | 16/11/2026 | Đăng nhập bằng email; bỏ bảng security_events, api_lab_runs, model_registry khỏi MVP (khớp ER chốt, D-09); Ollama của TV4 chạy trên Google Colab: thêm D-18; sửa 3.1, 4.5 (FR-PI-04, thêm FR-PI-10..12), 5.1, 5.4, 5.5, 9.1, 9.4, 10.1, 10.5, FR-OPS-01, 11.1, MỞ-5/MỞ-8, bảng rủi ro |
+| 0.4 | 18/11/2026 | Chốt chữ ký `LabService` theo bản cài đặt T-07: `validate(payload, settings)`, `run(ctx, payload)`; `LabResult`/`Component` là dataclass; thêm quy ước `records` (`case_code`, `judged_by='rule'`); guard có thêm `shape` và `records`; định danh có tiền tố (`med_`…); thêm `MAX_EVENTS_PER_EXPERIMENT`, `MAX_RESULT_BYTES`; sửa 5.3, 6.1, 7.3, 9.1, 10.5; API-01 lên v0.3 |
