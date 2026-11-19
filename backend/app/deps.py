@@ -20,6 +20,11 @@ def get_settings_dep(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def get_orchestrator(request: Request):
+    """Orchestrator dựng sẵn trong `create_app` (T-08). Router chỉ gọi `submit`, không đụng hàng đợi/worker."""
+    return request.app.state.orchestrator
+
+
 def get_db(request: Request) -> Iterator[Session]:
     with request.app.state.session_factory() as session:
         yield session

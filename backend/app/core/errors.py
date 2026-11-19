@@ -93,6 +93,9 @@ def install_error_handlers(app: FastAPI) -> None:
         # (có thể chứa mật khẩu).
         if any(d.get("type") == "json_invalid" for d in details):
             return problem(400, "MALFORMED_REQUEST", "Nội dung yêu cầu không phải JSON hợp lệ.", request=request)
+        # Thiếu cả thân (loc chỉ là ("body",)) cũng là 400 theo API-01 4.3; thiếu một trường trong thân vẫn là 422.
+        if any(d.get("type") == "missing" and tuple(d.get("loc", ())) == ("body",) for d in details):
+            return problem(400, "MALFORMED_REQUEST", "Thiếu nội dung yêu cầu (thân JSON).", request=request)
         errors = [{"field": _loc_to_field(d["loc"]), "message": d["msg"]} for d in details]
         return problem(422, "VALIDATION_ERROR", "Dữ liệu gửi lên không hợp lệ.", request=request, errors=errors)
 

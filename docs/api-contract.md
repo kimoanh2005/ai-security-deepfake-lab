@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.4 (công bố cho TV2–TV5; xuất từ API-01 v0.3, thêm mục 0 và 6.7, mã lỗi job ở 6.1) |
+| **Phiên bản** | 0.5 (router experiments T-09 đã nối; xem phụ lục) |
 | **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
@@ -21,13 +21,22 @@ Tài liệu mô tả **hợp đồng đích**. Không phải endpoint nào cũng
 |---|---|---|---|
 | Xác thực | `POST /auth/login`, `GET /users/me` | **Đã có** | T-05 |
 | Lab | `GET /labs`, `GET /labs/{lab}`, `PATCH /labs/{lab}` | **Đã có** (`links` hiện chỉ có `self`) | T-06 |
-| Chạy Lab | `POST /labs/{lab}/experiments` | Lõi đã có (orchestrator: 404, 409, 422, hàng đợi, vòng đời); **router chưa nối** | T-08 xong, T-09 |
-| Thử nghiệm | `GET /experiments`, `/{id}`, `/events`, `/report` | Chưa có | T-09 |
+| Chạy Lab | `POST /labs/{lab}/experiments` | **Đã có** (202 + `Location` + `Retry-After`) | T-08, T-09 |
+| Thử nghiệm | `GET /experiments`, `/{id}` (ETag/304), `/{id}/events`, `/{id}/report` | **Đã có** | T-09 |
 | Hệ thống | `GET /health` | Chưa có | T-10 |
 | Sandbox | `/sandbox/echo` | Chưa có | T-12 |
 | Media | `/media-assets` | Chưa có | T-13 |
 | Kịch bản/ca | `/labs/{lab}/scenarios`, `/labs/prompt_injection/cases` | Chưa có (cần TV4 cung cấp nội dung) | sau T-09 |
 | Khác | `artifacts`, `verification`, `prompt-runs`, `DELETE`, `models`, `users` | Chưa có (ưu tiên S/C) | sau MVP |
+
+Hành vi cụ thể của T-09 (ngoài những gì mục 3–8 đã nêu):
+
+- `GET /experiments/{id}/report` khi experiment còn `queued`/`running` → `409 STATE_CONFLICT`; `failed` vẫn có báo cáo (kèm `error`, không có phần kết quả). Báo cáo JSON có dạng `{ "experiment": {…}, "events": […] }`. Phản hồi có `Vary: Accept`.
+- `GET /experiments/{id}` trả `ETag` (băm nội dung biểu diễn) và `Cache-Control: no-cache`; `If-None-Match` (kể cả dạng `W/` hoặc `*`) khớp → `304` không thân.
+- `links` của experiment hiện chỉ có `self`, `events`, `report`; `prompt_runs`/`artifacts` thêm khi endpoint tồn tại.
+- Thiếu hẳn thân yêu cầu ở `POST` → `400 MALFORMED_REQUEST` (thiếu một trường trong thân vẫn là `422`).
+- `result_kind` chỉ lọc được trên experiment đã `done` (kết quả bị guard từ chối không có nhãn).
+- **Chưa làm:** `Idempotency-Key` (mục 8, mức S), `DELETE`, `artifacts`, `prompt-runs`, `verification`.
 
 Đối chiếu với `/openapi.json` (19/11/2026): 5 endpoint đã có khớp tài liệu về đường dẫn, phương thức, mã thành công, `operation_id` (`login`, `get_current_user`, `list_labs`, `get_lab`, `update_lab`) và dạng lỗi. Hai chỗ lệch cần biết:
 
@@ -665,7 +674,7 @@ Ba tệp `deepfake.py`, `prompt.py`, `api_lab.py` cũ không còn là router; n�
 |---|---|---|---|
 | T-06 | `GET /api/v1/labs`, `GET /labs/{lab}` đọc từ DB; báo TV5 (**xong phía backend**) | T-06 cũ | 1 |
 | T-08 | Orchestrator, hàng đợi, vòng đời (**xong**); `POST /labs/{lab}/experiments` → 202 + `Location` và `GET /experiments/{id}` với `ETag` thuộc T-09 | T-08 cũ | 2 |
-| T-09 | `POST /labs/{lab}/experiments`, `GET /experiments` (lọc, sắp xếp, phân trang), `/{id}`, `/events`, `/report` (Accept) | T-09 cũ | 2 |
+| T-09 | `POST /labs/{lab}/experiments`, `GET /experiments` (lọc, sắp xếp, phân trang), `/{id}`, `/events`, `/report` (Accept) (**xong**, 31 test hợp đồng) | T-09 cũ | 2 |
 | T-11 | Xuất `docs/api-contract.md` từ tài liệu này; bật OpenAPI với `tags`, `operation_id` ổn định (**xong** cho endpoint đã có) | T-11 cũ | 1 |
 | T-16 | Bộ xử lý lỗi toàn cục trả `problem+json`; ánh xạ 400/422; `405` kèm `Allow` (**xong**) | mới | 1 |
 | T-17 | Test hợp đồng: mỗi endpoint kiểm tra mã, `Location`, `Content-Type`, dạng lỗi | mới | 2 |
@@ -681,3 +690,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.2 | 15/11/2026 | Bản REST theo tài nguyên đầu tiên |
 | 0.3 | 18/11/2026 | Đăng nhập là `POST /auth/login` (200, không `Location`); thêm D-19, D-20; định danh media-asset là `med_`; chốt chữ ký `LabService` (11.3); ghi rõ mặc định/ràng buộc thân yêu cầu từng Lab (mục 5); `rate_limit_modes` là boolean; mô tả 401 đăng nhập và giới hạn tần suất đăng nhập |
 | 0.4 | 19/11/2026 | Công bố trong repo (T-11): thêm mục 0 (trạng thái triển khai, đối chiếu `/openapi.json`) và 6.7 (ví dụ thật); mã lỗi job (`JOB_TIMEOUT`, `RESULT_REJECTED`, `INTERRUPTED`, `INTERNAL_ERROR`) ở 6.1; ghi rõ `config` là payload đã chuẩn hóa (5.5), `LAB_DISABLED` kiểm tra trước validate, 404 khi `{lab}` không tồn tại, 503 khi Lab chưa có service (4.3); hàng đợi và khởi động lại (mục 8) |
+| 0.5 | 19/11/2026 | T-09: nối router experiments (tạo, danh sách, chi tiết + ETag, events, report theo `Accept`); bổ sung hành vi cụ thể ở mục 0 (report `409` khi chưa kết thúc, thiếu thân → `400`) |
