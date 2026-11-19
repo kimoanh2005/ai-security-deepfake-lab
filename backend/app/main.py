@@ -9,6 +9,7 @@ from app.config import Settings, get_settings
 from app.core.db import make_engine, make_session_factory
 from app.core.errors import install_error_handlers
 from app.core.ratelimit import SlidingWindowLimiter
+from app.jobs.orchestrator import Orchestrator
 
 logging.getLogger("app").setLevel(logging.INFO)
 
@@ -20,16 +21,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     engine = make_engine(settings.db_file)
 
+    session_factory = make_session_factory(engine)
+    orchestrator = Orchestrator(settings, session_factory)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         settings.storage_path.mkdir(parents=True, exist_ok=True)
+        orchestrator.start()  # khôi phục job treo (FR-EXP-04) rồi chạy worker; cần CSDL đã migrate
         yield
+        orchestrator.stop()
         engine.dispose()
 
     app = FastAPI(title="AI Security & Deepfake Lab API", version="1.0.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.engine = engine
-    app.state.session_factory = make_session_factory(engine)
+    app.state.session_factory = session_factory
+    app.state.orchestrator = orchestrator
     app.state.limiters = {"login": SlidingWindowLimiter(settings.login_rate_limit_per_minute, 60)}
 
     app.add_middleware(

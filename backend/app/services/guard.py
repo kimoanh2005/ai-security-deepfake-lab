@@ -64,6 +64,30 @@ def _unsafe_artifact(path: Any) -> str | None:
     return None
 
 
+def _is_flag(value: Any) -> bool:
+    return isinstance(value, (bool, int)) and value in (0, 1)
+
+
+def _is_int(value: Any, minimum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _check_prompt_run_types(row: dict[str, Any]) -> str:
+    """Kiểu của một dòng prompt_runs. SQLite không ép kiểu cột, nên chặn ở đây thay vì để dữ liệu sai lọt vào."""
+    if not isinstance(row.get("case_code"), str) or not row["case_code"]:
+        return "prompt_runs: thiếu case_code (chuỗi không rỗng)."
+    if "defense" not in row or not _is_flag(row["defense"]):
+        return "prompt_runs: defense bắt buộc và phải là boolean (hoặc 0/1)."
+    if "attempt" in row and not _is_int(row["attempt"], 1):
+        return "prompt_runs: attempt phải là số nguyên >= 1."
+    if row.get("latency_ms") is not None and not _is_int(row["latency_ms"], 0):
+        return "prompt_runs: latency_ms phải là số nguyên >= 0 hoặc null."
+    for key in ("response", "model_name"):
+        if row.get(key) is not None and not isinstance(row[key], str):
+            return f"prompt_runs: {key} phải là chuỗi hoặc null."
+    return ""
+
+
 def _check_records(records: Any) -> str:
     """Trả chuỗi lỗi (rỗng nếu ổn)."""
     if not isinstance(records, dict):
@@ -79,6 +103,9 @@ def _check_records(records: Any) -> str:
             if extra:
                 return f"bản ghi của {table!r} có cột ngoài danh sách cho phép: {sorted(map(str, extra))}."
             if table == "prompt_runs":
+                bad_type = _check_prompt_run_types(row)
+                if bad_type:
+                    return bad_type
                 # Không tự gán thành công (FR-PI-05): service chỉ được đặt kết quả khi chấm bằng quy tắc.
                 violated, judged_by = row.get("task_violated"), row.get("judged_by")
                 if violated is None and judged_by is not None:

@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     max_pi_calls: int = Field(default=60, ge=1)               # số lần gọi mô hình tối đa mỗi experiment (FR-PI-09)
     max_events_per_experiment: int = Field(default=200, ge=1)  # chống một Lab lỗi vòng lặp làm phình CSDL
     max_result_bytes: int = Field(default=262144, ge=1024)    # kích thước tối đa result (G7), 256 KiB
+    # Thời gian tối đa một job (giây), FR-EXP-05. Giá trị khởi đầu, cần đo trên máy thật.
+    # Mỗi Lab có biến riêng JOB_TIMEOUT_<LAB> (viết hoa); thiếu thì dùng JOB_TIMEOUT_DEFAULT.
+    job_timeout_default: float = Field(default=120.0, gt=0)
+    job_timeout_deepfake: float | None = Field(default=None, gt=0)
+    job_timeout_prompt_injection: float | None = Field(default=None, gt=0)
+    job_timeout_api_lab: float | None = Field(default=None, gt=0)
+    job_timeout_poisoning: float | None = Field(default=None, gt=0)
 
     @field_validator("jwt_secret")
     @classmethod
@@ -34,6 +41,10 @@ class Settings(BaseSettings):
         if v.lower().startswith(("change", "your", "secret", "replace", "<")):
             raise ValueError("JWT_SECRET đang là giá trị mẫu; hãy đặt chuỗi ngẫu nhiên dài (vd: python -c \"import secrets;print(secrets.token_urlsafe(48))\")")
         return v
+
+    def job_timeout_for(self, lab_code: str) -> float:
+        """Timeout (giây) của một job thuộc Lab `lab_code`; Lab chưa có biến riêng dùng giá trị mặc định."""
+        return getattr(self, f"job_timeout_{lab_code}", None) or self.job_timeout_default
 
     @property
     def db_file(self) -> Path:
