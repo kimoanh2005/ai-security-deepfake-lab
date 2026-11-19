@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Tài liệu** | SPEC-01 · Đặc tả yêu cầu và kiến trúc backend (hợp đồng API chi tiết: API-01) |
-| **Phiên bản** | 0.4 (bản nháp để nhóm xác nhận; chốt chữ ký `LabService` theo bản cài đặt T-07) |
-| **Ngày** | 18/11/2026 |
+| **Phiên bản** | 0.5 (bản nháp để nhóm xác nhận; chốt hành vi orchestrator theo bản cài đặt T-08) |
+| **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 (Trưởng nhóm, kiến trúc & backend) |
 | **Căn cứ** | Bản đề xuất sản phẩm (SP); báo cáo "AI Security và Deepfake" (1.3.2, 3.2.1–3.2.3); thiết kế backend v0 (Phần B); quét repo ngày 15/11/2026 |
 | **Trạng thái** | Các mục đánh dấu **[ĐỀ XUẤT]** là quyết định mặc định của TV1, chưa được nhóm xác nhận. Các mục **[MỞ]** cần nhóm quyết. |
@@ -138,7 +138,7 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
 | FR-EXP-01 | Mọi lần chạy Lab tạo một **experiment** với máy trạng thái `queued → running → done/failed` | M | SP A.4.5, A.8 | Kiểm tra chuyển trạng thái hợp lệ (5.2) |
 | FR-EXP-02 | `POST /labs/{lab}/experiments` trả ngay `202` + `Location` + biểu diễn experiment (`state:queued`); kết quả lấy bằng `GET /experiments/{id}` | M | SP A.5.3 | Không chặn HTTP quá thời gian cấu hình |
 | FR-EXP-03 | Chỉ một job `running` tại một thời điểm; job khác chờ `queued` | M | D-04 | Hai yêu cầu đồng thời không gây lỗi khóa DB |
-| FR-EXP-04 | Khi khởi động, mọi job `running` cũ đổi thành `failed` (event `interrupted`) | M | — | Khởi động lại giữa lúc chạy → không còn job treo |
+| FR-EXP-04 | Khi khởi động, mọi job `running` cũ đổi thành `failed` (`error.code=INTERRUPTED`, event `interrupted`); job `queued` cũ **được xếp hàng lại** (chưa chạy nên không mất) | M | — | Khởi động lại giữa lúc chạy → không còn job treo; job đang chờ vẫn chạy |
 | FR-EXP-05 | Mỗi job có thời gian tối đa (timeout theo Lab); quá hạn → `failed` (event `timeout`) | M | SP A.11 | — |
 | FR-EXP-06 | Kết quả `done` **bắt buộc** hợp lệ theo 6.1: có `result_kind` ≤ trần Lab, `limitations` không rỗng, không có khóa cấm | M | SP A.0, A.8 | Service trả kết quả sai → experiment `failed`, event `result_rejected` |
 | FR-EXP-07 | `GET /experiments` hỗ trợ lọc `lab`, `result_kind`, `state`, `created_by`, khoảng thời gian, sắp xếp, phân trang | M | SP A.8 | Lọc đúng; mặc định mới nhất trước |
@@ -243,10 +243,22 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
     queued ──worker nhận──► running ──run() OK + result_guard đạt──► done
         │                      │
         │ khởi động lại        ├── ngoại lệ / timeout / result_guard từ chối ──► failed
-        └──────────────────────┘ (running → failed, event "interrupted")
+        │ (xếp hàng lại)       │
+        └──────────────────────┘ khởi động lại: running → failed, event "interrupted"
 ```
 
 Quy tắc: chỉ các chuyển trạng thái trên là hợp lệ; `done` và `failed` là trạng thái cuối. Yêu cầu sai ở Cổng 1 (4xx) **không** tạo experiment.
+
+Mã lỗi của job (`experiments.error_code`, trả ở `error.code`; khác mã lỗi HTTP):
+
+| `error.code` | Khi nào | Event cuối |
+|---|---|---|
+| `JOB_TIMEOUT` | Quá `JOB_TIMEOUT_<LAB>` (FR-EXP-05) | `timeout` |
+| `RESULT_REJECTED` | `result_guard` hoặc kiểm tra `records` từ chối (FR-EXP-06); lý do ở `lab_results.guard_details` | `result_rejected` |
+| `INTERRUPTED` | Máy chủ khởi động lại khi job đang chạy (FR-EXP-04) | `interrupted` |
+| `INTERNAL_ERROR` | Service ném ngoại lệ ngoài dự kiến, hoặc lỗi ghi CSDL; chi tiết chỉ ở log, không trả client | `job_failed` |
+
+Cơ chế timeout: worker chạy `service.run` trong một thread con. Hết giờ, orchestrator gọi `ctx.cancel()` để `ctx.check()` ném `JobCancelled`. Service không gọi `ctx.check()` thì không dừng được (Python không giết được thread): sau thời gian ân hạn (5 s) job vẫn bị đánh dấu `failed` và thread bị bỏ rơi để hàng đợi không kẹt. Vì vậy **service dài phải gọi `ctx.check()` định kỳ**.
 
 ### 5.3. Trình tự xử lý một yêu cầu chạy Lab
 
@@ -254,7 +266,7 @@ Quy tắc: chỉ các chuyển trạng thái trên là hợp lệ; `done` và `f
 2. `service.validate(payload, settings)` → trả payload đã chuẩn hóa hoặc ném `LabValidationError` (→ 422, không tạo experiment).
 3. Orchestrator tạo experiment `queued` (+ event `queued`), đẩy job, trả `202`.
 4. Worker: `running` → gọi `service.run(ctx, payload)` trong timeout.
-5. **Cổng 3 (result_guard):** kiểm tra `LabResult` (6.1). Đạt → orchestrator ghi `result_json` + `records` vào bảng nghiệp vụ trong **một giao dịch**, `done`. Không đạt → `failed` + `result_rejected`.
+5. **Cổng 3 (result_guard):** kiểm tra `LabResult` (6.1). Đạt → orchestrator ghi `lab_results` + `records` (đổi `case_code` → `case_id`) + `experiment_events` + chuyển `done` trong **một giao dịch**. Không đạt (kể cả `case_code` không có trong `prompt_cases`) → `failed` + `result_rejected`, **không ghi dòng nghiệp vụ nào**; `lab_results` giữ một dòng `guard_passed=0` (`result_kind=planned` để thỏa ràng buộc cột, không lưu nội dung bị từ chối) kèm `guard_details`.
 6. Frontend poll `Location` (`GET /experiments/{id}`, có `ETag`) đến khi `done`/`failed`.
 
 ### 5.4. Quy tắc phụ thuộc giữa các lớp
@@ -297,7 +309,7 @@ Kết quả chỉ được lưu `done` khi **tất cả** đúng:
 | G6 | `artifacts` là đường dẫn tương đối nằm trong `storage/` | `../../etc/x` |
 | G7 | Kích thước `result_json` ≤ giới hạn cấu hình (`MAX_RESULT_BYTES`), tuần tự hóa được thành JSON (không NaN) | — |
 
-Cài đặt (`app/services/guard.py`) còn hai kiểm tra bổ sung: `shape` (đúng kiểu `LabResult`) và `records` (chỉ ghi bảng/cột trong `RECORD_COLUMNS`; service không được tự đặt `task_violated` trừ khi kèm `judged_by='rule'` — FR-PI-05). Guard không ném ngoại lệ với đầu vào lạ: kết quả sai bị từ chối kèm lý do trong `lab_results.guard_details`.
+Cài đặt (`app/services/guard.py`) còn hai kiểm tra bổ sung: `shape` (đúng kiểu `LabResult`) và `records` (chỉ ghi bảng/cột trong `RECORD_COLUMNS`; kiểu từng dòng `prompt_runs`: `case_code` chuỗi, `defense` boolean/0/1 bắt buộc, `attempt` ≥ 1, `latency_ms` ≥ 0; service không được tự đặt `task_violated` trừ khi kèm `judged_by='rule'` — FR-PI-05). Guard không ném ngoại lệ với đầu vào lạ: kết quả sai bị từ chối kèm lý do trong `lab_results.guard_details`.
 
 ### 6.2. Trần trạng thái
 
@@ -488,7 +500,7 @@ Không ghi: mật khẩu, token, nội dung tệp, toàn bộ nội dung prompt/
 
 ### 10.4. Danh mục `event_type` khởi đầu
 
-`queued`, `job_started`, `job_finished`, `result_rejected`, `timeout`, `interrupted`, `frame_extracted`, `llm_call`, `request_sent`, `rate_limited`, `verification_saved`, `judged`.
+`queued`, `job_started`, `job_finished`, `job_failed`, `result_rejected`, `timeout`, `interrupted`, `frame_extracted`, `llm_call`, `request_sent`, `rate_limited`, `verification_saved`, `judged`.
 Loại bảo mật: `login_failed`, `file_rejected`, `rate_limited`, `lab_toggled`.
 
 ### 10.5. Biến cấu hình (`.env`)
@@ -510,7 +522,8 @@ Loại bảo mật: `login_failed`, `file_rejected`, `rate_limited`, `lab_toggle
 | `MAX_PI_CALLS` | 60 (khởi đầu) |
 | `MAX_EVENTS_PER_EXPERIMENT` | 200 (khởi đầu); chặn một Lab lỗi vòng lặp làm phình CSDL |
 | `MAX_RESULT_BYTES` | 262144 (256 KiB); giới hạn G7 |
-| `JOB_TIMEOUT_<LAB>` | theo Lab, cần đo |
+| `JOB_TIMEOUT_DEFAULT` | 120 giây (khởi đầu); dùng cho Lab chưa đặt biến riêng |
+| `JOB_TIMEOUT_DEEPFAKE`, `JOB_TIMEOUT_PROMPT_INJECTION`, `JOB_TIMEOUT_API_LAB`, `JOB_TIMEOUT_POISONING` | giây, tùy chọn, cần đo; Lab mới thêm một biến `job_timeout_<code>` trong `app/config.py` |
 
 ---
 
@@ -618,3 +631,4 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 | 0.2 | 15/11/2026 | Chuyển API sang REST theo tài nguyên; tách hợp đồng API thành API-01; thêm D-13 đến D-17; mục 8 thành tóm tắt |
 | 0.3 | 16/11/2026 | Đăng nhập bằng email; bỏ bảng security_events, api_lab_runs, model_registry khỏi MVP (khớp ER chốt, D-09); Ollama của TV4 chạy trên Google Colab: thêm D-18; sửa 3.1, 4.5 (FR-PI-04, thêm FR-PI-10..12), 5.1, 5.4, 5.5, 9.1, 9.4, 10.1, 10.5, FR-OPS-01, 11.1, MỞ-5/MỞ-8, bảng rủi ro |
 | 0.4 | 18/11/2026 | Chốt chữ ký `LabService` theo bản cài đặt T-07: `validate(payload, settings)`, `run(ctx, payload)`; `LabResult`/`Component` là dataclass; thêm quy ước `records` (`case_code`, `judged_by='rule'`); guard có thêm `shape` và `records`; định danh có tiền tố (`med_`…); thêm `MAX_EVENTS_PER_EXPERIMENT`, `MAX_RESULT_BYTES`; sửa 5.3, 6.1, 7.3, 9.1, 10.5; API-01 lên v0.3 |
+| 0.5 | 19/11/2026 | Chốt hành vi orchestrator theo T-08: mã lỗi job (`JOB_TIMEOUT`, `RESULT_REJECTED`, `INTERRUPTED`, `INTERNAL_ERROR`) và cơ chế timeout/hủy (5.2); khởi động lại xếp lại job `queued` (FR-EXP-04); kết quả bị từ chối vẫn lưu `lab_results` với `guard_passed=0` và không ghi dòng nghiệp vụ (5.3); guard kiểm kiểu `prompt_runs` (6.1); thêm event `job_failed` (10.4); biến `JOB_TIMEOUT_*` (10.5) |
