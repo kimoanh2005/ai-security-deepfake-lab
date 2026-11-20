@@ -68,7 +68,14 @@ Từ cửa sổ backend, đang ở `backend`:
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+Hoặc chạy một lệnh từ thư mục dự án (tự chạy `alembic upgrade head`, seed rồi khởi động uvicorn):
+
+```powershell
+.\scripts\start.ps1            # thêm -Reload khi phát triển, -NoSeed để bỏ qua seed, -Port 8001 để đổi cổng
+```
+
 - API: <http://127.0.0.1:8000>
+- Kiểm tra sức khỏe (DB, worker, FFmpeg, Ollama trên Colab; không cần token): <http://127.0.0.1:8000/api/v1/health>
 - Tài liệu API Swagger: <http://127.0.0.1:8000/docs>
 - Kiểm tra danh sách Lab: <http://127.0.0.1:8000/api/v1/labs>
 

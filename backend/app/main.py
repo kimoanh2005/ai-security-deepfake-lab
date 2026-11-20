@@ -8,10 +8,14 @@ from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.core.db import make_engine, make_session_factory
 from app.core.errors import install_error_handlers
+from app.core.health import HealthChecker
 from app.core.ratelimit import SlidingWindowLimiter
 from app.jobs.orchestrator import Orchestrator
 
 logging.getLogger("app").setLevel(logging.INFO)
+# httpx ghi URL đầy đủ mỗi lời gọi ở mức INFO; với Ollama đó là địa chỉ đường hầm, không được vào log.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 EXPOSED_HEADERS = ["Location", "Retry-After", "ETag", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"]
 
@@ -37,6 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.orchestrator = orchestrator
+    app.state.health = HealthChecker(settings, session_factory, orchestrator, app.version)
     app.state.limiters = {"login": SlidingWindowLimiter(settings.login_rate_limit_per_minute, 60)}
 
     app.add_middleware(

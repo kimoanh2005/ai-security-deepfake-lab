@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.6 (thêm `DEP_UNAVAILABLE` do service báo và lưu lượt chạy một phần; xem phụ lục) |
+| **Phiên bản** | 0.7 (thêm `GET /health`, mục 6.8; xem phụ lục) |
 | **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
@@ -23,7 +23,7 @@ Tài liệu mô tả **hợp đồng đích**. Không phải endpoint nào cũng
 | Lab | `GET /labs`, `GET /labs/{lab}`, `PATCH /labs/{lab}` | **Đã có** (`links` hiện chỉ có `self`) | T-06 |
 | Chạy Lab | `POST /labs/{lab}/experiments` | **Đã có** (202 + `Location` + `Retry-After`) | T-08, T-09 |
 | Thử nghiệm | `GET /experiments`, `/{id}` (ETag/304), `/{id}/events`, `/{id}/report` | **Đã có** | T-09 |
-| Hệ thống | `GET /health` | Chưa có | T-10 |
+| Hệ thống | `GET /health` | **Đã có** (6.8) | T-10 |
 | Sandbox | `/sandbox/echo` | Chưa có | T-12 |
 | Media | `/media-assets` | Chưa có | T-13 |
 | Kịch bản/ca | `/labs/{lab}/scenarios`, `/labs/prompt_injection/cases` | Chưa có (cần TV4 cung cấp nội dung) | sau T-09 |
@@ -120,7 +120,7 @@ Quy ước đặt tên:
 
 | Phương thức & đường dẫn | Quyền | Ưu | Thành công |
 |---|---|---|---|
-| `GET /health` | công khai | M | `200` (DB, Ollama, FFmpeg, worker, phiên bản) |
+| `GET /health` | công khai | M | `200` (DB, Ollama, FFmpeg, worker, phiên bản); `503` khi DB hoặc worker hỏng (6.8) |
 
 ### 3.3. Lab và danh mục kịch bản
 
@@ -539,6 +539,33 @@ Lỗi (đều `Content-Type: application/problem+json`; chú thích `//` chỉ �
 
 `405` có cùng dạng với `code: "METHOD_NOT_ALLOWED"` và header `Allow` (ví dụ `GET /api/v1/auth/login` → `Allow: POST`).
 
+### 6.8. Sức khỏe hệ thống (`GET /api/v1/health`)
+
+Công khai, không cần token, `Cache-Control: no-store`. Dùng để kiểm tra trước buổi demo (nhất là Ollama trên Colab).
+
+```json
+{
+  "status": "degraded",
+  "version": "1.0.0",
+  "checked_at": "2026-11-20T14:05:31Z",
+  "components": {
+    "database": { "status": "up" },
+    "worker":   { "status": "up", "queue_size": 0, "busy": false },
+    "ffmpeg":   { "status": "up" },
+    "ollama":   { "status": "down", "reason": "unreachable" }
+  }
+}
+```
+
+| Trường | Giá trị |
+|---|---|
+| `status` | `ok` (mọi thành phần `up`) · `degraded` (DB và worker chạy, còn thành phần khác không `up`) · `down` (DB hoặc worker hỏng) |
+| `components.*.status` | `up` · `down` · `not_configured` (chỉ `ollama`, khi `OLLAMA_URL` để trống) |
+| `components.ollama.reason` | Mã cố định: `not_configured`, `invalid_url` (không phải `https`/host ngoài `OLLAMA_ALLOWED_HOSTS`, không gọi mạng), `unreachable`, `unauthorized`, `bad_response`, `model_missing` (có `OLLAMA_MODEL` nhưng Colab không có mô hình đó) |
+| Mã HTTP | `200` khi DB và worker chạy (kể cả `degraded`); `503` khi DB hoặc worker hỏng |
+
+Quy tắc: Ollama được thăm dò bằng `GET {OLLAMA_URL}/api/tags` (timeout 2 s, không theo chuyển hướng) và kết quả được nhớ 30 s, nên Colab tắt không làm `/health` chậm hay lỗi. Phản hồi **không bao giờ** chứa địa chỉ đường hầm, token, đường dẫn tệp hay nội dung ngoại lệ. FFmpeg chỉ được tìm trong `PATH`.
+
 ---
 
 ## 7. Truy vấn danh sách
@@ -692,3 +719,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.4 | 19/11/2026 | Công bố trong repo (T-11): thêm mục 0 (trạng thái triển khai, đối chiếu `/openapi.json`) và 6.7 (ví dụ thật); mã lỗi job (`JOB_TIMEOUT`, `RESULT_REJECTED`, `INTERRUPTED`, `INTERNAL_ERROR`) ở 6.1; ghi rõ `config` là payload đã chuẩn hóa (5.5), `LAB_DISABLED` kiểm tra trước validate, 404 khi `{lab}` không tồn tại, 503 khi Lab chưa có service (4.3); hàng đợi và khởi động lại (mục 8) |
 | 0.5 | 19/11/2026 | T-09: nối router experiments (tạo, danh sách, chi tiết + ETag, events, report theo `Accept`); bổ sung hành vi cụ thể ở mục 0 (report `409` khi chưa kết thúc, thiếu thân → `400`) |
 | 0.6 | 20/11/2026 | `error.code = DEP_UNAVAILABLE` (event `dep_unavailable`) khi phụ thuộc ngoài mất kết nối giữa chừng (FR-PI-10); job `failed` vẫn có `result`/`result_kind` = `null` nhưng các lượt `prompt_runs` đã chạy được lưu; `error.message` là câu cố định (6.1) |
+| 0.7 | 20/11/2026 | T-10: thêm `GET /api/v1/health` (6.8): `ok`/`degraded`/`down`, mã lý do Ollama cố định, `503` chỉ khi DB hoặc worker hỏng |

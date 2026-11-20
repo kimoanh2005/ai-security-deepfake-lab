@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | **Tài liệu** | SPEC-01 · Đặc tả yêu cầu và kiến trúc backend (hợp đồng API chi tiết: API-01) |
-| **Phiên bản** | 0.6 (bản nháp để nhóm xác nhận; thêm `LabRunError`: lỗi có mã và lưu kết quả một phần, FR-PI-10) |
+| **Phiên bản** | 0.7 (bản nháp để nhóm xác nhận; chốt ngữ nghĩa `GET /api/v1/health`, FR-OPS-01) |
 | **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 (Trưởng nhóm, kiến trúc & backend) |
 | **Căn cứ** | Bản đề xuất sản phẩm (SP); báo cáo "AI Security và Deepfake" (1.3.2, 3.2.1–3.2.3); thiết kế backend v0 (Phần B); quét repo ngày 15/11/2026 |
 | **Trạng thái** | Các mục đánh dấu **[ĐỀ XUẤT]** là quyết định mặc định của TV1, chưa được nhóm xác nhận. Các mục **[MỞ]** cần nhóm quyết. |
 
-Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.6*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
+Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.7*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
 
 ---
 
@@ -199,7 +199,7 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
 
 | ID | Yêu cầu | Ưu | Nguồn | AC |
 |---|---|---|---|---|
-| FR-OPS-01 | `GET /health` báo trạng thái DB, Ollama (từ xa), FFmpeg, worker, phiên bản; kiểm tra Ollama có timeout ngắn (≈2 s, mạng) và nhớ kết quả ≈30 s; không trả địa chỉ/token | M | D-18 | Colab tắt/đường hầm hỏng → `ollama: down`, `/health` vẫn trả nhanh, không làm sập API |
+| FR-OPS-01 | `GET /api/v1/health` (công khai) báo trạng thái DB, Ollama (từ xa), FFmpeg, worker, phiên bản; kiểm tra Ollama có timeout ngắn (≈2 s, mạng) và nhớ kết quả ≈30 s; chỉ trả trạng thái và mã lý do cố định, không trả địa chỉ/token/đường dẫn/nội dung ngoại lệ. `200` khi DB và worker chạy (kể cả `degraded`); `503` khi DB hoặc worker hỏng | M | D-18 | Colab tắt/đường hầm hỏng → `ollama: down`, `/health` vẫn `200`, trả nhanh, không làm sập API; `OLLAMA_URL` sai host/`http` → `down` (`invalid_url`) và không gọi mạng |
 | FR-OPS-02 | Sự kiện bảo mật (`login_failed`, `file_rejected`, `lab_toggled`) ghi ra log ứng dụng, có thời gian, mức, loại; không chứa mật khẩu/token | S | SP A.5, D-09 | Grep log thấy sự kiện, không thấy bí mật |
 | FR-OPS-03 | `scripts/start.ps1` kiểm tra điều kiện, tạo venv, chạy migration, seed, khởi động | M | SP A.8 | Máy Windows sạch chạy được bằng một lệnh |
 | FR-OPS-04 | Cấu hình qua `.env`; có `.env.example`; không commit bí mật | M | SP A.8 | — |
@@ -370,7 +370,7 @@ Mỗi bảng thêm bằng migration riêng; không sửa tay tệp `.db`.
 
 ## 8. Hợp đồng API
 
-Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.6** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
+Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.7** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
 
 ### 8.1. Nguyên tắc
 
@@ -638,3 +638,4 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 | 0.4 | 18/11/2026 | Chốt chữ ký `LabService` theo bản cài đặt T-07: `validate(payload, settings)`, `run(ctx, payload)`; `LabResult`/`Component` là dataclass; thêm quy ước `records` (`case_code`, `judged_by='rule'`); guard có thêm `shape` và `records`; định danh có tiền tố (`med_`…); thêm `MAX_EVENTS_PER_EXPERIMENT`, `MAX_RESULT_BYTES`; sửa 5.3, 6.1, 7.3, 9.1, 10.5; API-01 lên v0.3 |
 | 0.5 | 19/11/2026 | Chốt hành vi orchestrator theo T-08: mã lỗi job (`JOB_TIMEOUT`, `RESULT_REJECTED`, `INTERRUPTED`, `INTERNAL_ERROR`) và cơ chế timeout/hủy (5.2); khởi động lại xếp lại job `queued` (FR-EXP-04); kết quả bị từ chối vẫn lưu `lab_results` với `guard_passed=0` và không ghi dòng nghiệp vụ (5.3); guard kiểm kiểu `prompt_runs` (6.1); thêm event `job_failed` (10.4); biến `JOB_TIMEOUT_*` (10.5) |
 | 0.6 | 20/11/2026 | Thêm `LabRunError` (FR-PI-10): service báo lỗi có mã (`DEP_UNAVAILABLE`, `JOB_TIMEOUT`) và lưu `partial_records` hợp lệ; mã lạ → `INTERNAL_ERROR`; `message` không trả client; không có `lab_results` cho job lỗi này; thêm event `dep_unavailable` (5.2, 9.1, 10.4); API-01 lên v0.6 |
+| 0.7 | 20/11/2026 | T-10: chốt `GET /api/v1/health` (FR-OPS-01): thành phần `database`, `worker`, `ffmpeg`, `ollama`; trạng thái tổng `ok`/`degraded`/`down`; `503` chỉ khi DB hoặc worker hỏng; Ollama cache 30 s, timeout 2 s, mã lý do cố định; API-01 lên v0.7 |
