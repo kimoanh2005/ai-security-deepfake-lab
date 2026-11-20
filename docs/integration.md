@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | INT-01 · Hướng dẫn viết service cho một Lab |
-| **Phiên bản** | 0.1 (19/11/2026) — theo SPEC-01 v0.5 mục 5, 6, 9 và mã `backend/app/services/`, `backend/app/jobs/orchestrator.py` |
+| **Phiên bản** | 0.2 (20/11/2026) — theo SPEC-01 v0.6 mục 5, 6, 9 và mã `backend/app/services/`, `backend/app/jobs/orchestrator.py` |
 | **Người phụ trách** | TV1 |
 | **Đọc kèm** | `docs/api-contract.md` (REST mà frontend gọi), `docs/spec/spec.md` (đặc tả) |
 
@@ -78,7 +78,7 @@ class RunContext:                # orchestrator dựng, bạn chỉ dùng
 `run`:
 
 - Nhận đúng giá trị `validate` đã trả. Chạy trong **worker thread** (một job tại một thời điểm); được phép chặn, nhưng phải gọi `ctx.check()` định kỳ (mục 7).
-- Trả `LabResult`. Ném ngoại lệ thì experiment thành `failed` (`INTERNAL_ERROR`); thông điệp ngoại lệ **không** được trả cho client, chỉ ghi log máy chủ.
+- Trả `LabResult`. Ném ngoại lệ thường thì experiment thành `failed` (`INTERNAL_ERROR`) và **mất** dữ liệu đã chạy; thông điệp ngoại lệ **không** được trả cho client, chỉ ghi log máy chủ. Khi phụ thuộc ngoài hỏng giữa chừng (Ollama/Colab), ném `LabRunError` (mục 6b) để báo mã lỗi đúng và giữ lại các lượt đã chạy.
 
 ## 4. Luật nhãn trung thực (điều TV1 kiểm bằng máy)
 
@@ -136,6 +136,33 @@ records={"prompt_runs": [
 | Trần | tổng lượt gọi ≤ `MAX_PI_CALLS`: kiểm ở `validate`, vượt thì `LabValidationError` (API trả `422`) |
 
 Bảng nghiệp vụ mới (ví dụ cho Deepfake) = thêm cột vào `RECORD_COLUMNS` + migration + nhánh ghi trong orchestrator: **hỏi TV1**, đừng tự thêm.
+
+## 6b. Lỗi có mã và lưu kết quả một phần: `LabRunError` (TV4, Ollama trên Colab)
+
+Colab hay ngắt phiên hoặc đổi địa chỉ đường hầm giữa lúc đang chạy. Đừng để lỗi mạng bay ra thành ngoại lệ thường: ném `LabRunError` kèm các dòng đã chạy được.
+
+```python
+from app.services.base import LabRunError
+
+rows = []                                   # các dòng prompt_runs đã hoàn thành
+for case, defense, attempt in plan:
+    ctx.check()
+    try:
+        rows.append(call_model(case, defense, attempt))      # trả dòng theo mục 6
+    except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+        ctx.emit("error", "llm_call", "Mất kết nối tới mô hình giữa chừng")
+        raise LabRunError("DEP_UNAVAILABLE", f"{type(exc).__name__}", {"prompt_runs": rows}) from exc
+```
+
+| Quy tắc | Chi tiết |
+|---|---|
+| `code` | Chỉ `DEP_UNAVAILABLE` hoặc `JOB_TIMEOUT`. Mã khác (kể cả `RESULT_REJECTED`, `INTERRUPTED`) bị đổi thành `INTERNAL_ERROR`; dữ liệu vẫn giữ |
+| `message` | Chỉ ghi **log máy chủ**; không vào event, không trả client. Vẫn **đừng** đưa địa chỉ đường hầm hay token vào đó, và nên chỉ ghi tên loại lỗi như ví dụ. `error.message` mà client thấy là câu cố định theo mã |
+| `partial_records` | Cùng dạng và cùng kiểm tra như `records` (mục 6): chỉ bảng/cột cho phép, `case_code` phải có trong `prompt_cases`, `task_violated` chỉ kèm `judged_by="rule"`, tổng kích thước ≤ `MAX_RESULT_BYTES`. **Một dòng sai là bỏ cả nhóm** (không lưu một nửa); event cuối khi đó có `data.partial_dropped = true`. Hãy kiểm tra mã ca trong `validate` để tránh tình huống này |
+| Kết quả cấp experiment | **Không có**: không `lab_results`, không `result_kind`, `result: null`. Các dòng từng phần là dữ liệu thô, không có nhãn, không được tính ASR (chưa đủ lượt) |
+| Hủy do hết giờ | Vẫn để `JobCancelled` bay ra (mục 7); chỉ ném `LabRunError("JOB_TIMEOUT", ...)` khi chính service biết mình hết thời gian của một phụ thuộc, không phải khi `ctx.check()` báo hủy |
+
+Chỉ dùng cho phụ thuộc ngoài hỏng. Lỗi lập trình của bạn vẫn là ngoại lệ thường (thành `INTERNAL_ERROR`, để lộ ra khi test), và kết quả sai nhãn vẫn đi qua `result_guard`.
 
 ## 7. Thời gian chạy và hủy: `ctx.check()`
 
@@ -236,7 +263,7 @@ Chạy cả vòng đời qua orchestrator (hàng đợi, ghi DB): copy cách d�
 
 **TV2/TV3 — Deepfake.** Cấu trúc thư mục bàn giao TV2 → TV3 (SPEC 9.3): `storage/experiments/<experiment_id>/` gồm `metadata.json` (`duration_s, fps, width, height, codec, frame_count, has_audio`), `frames/000001.jpg…`, `audio.wav` (nếu có; MVP không phân tích âm thanh, D-03, ghi vào `limitations`). Video lấy theo `asset_id` (bảng `media_assets`); **không** nhận đường dẫn từ client. Hàm lấy đường dẫn an toàn trong `storage/` thuộc T-13 của TV1 (`core/files.py`), **chưa có**: cho tới lúc đó hãy tự ghép `settings.storage_path` với tên tệp và kiểm `Path.resolve()` nằm trong `storage/`. FFmpeg gọi bằng `subprocess.run([...], timeout=…)`. Chưa có detector được phê duyệt: giữ `detector: not_integrated`, không điểm số, `components` gồm `preprocess` (`real` nếu chạy thật) và `detector` (`planned`), nên `result_kind = "planned"`; Lab trần `simulated` vẫn chấp nhận nhãn thấp hơn. Có detector (MỞ-6, chốt cuối tuần 4): thêm `suspicion_score`, `verdict ∈ {suspected, not_detected, insufficient_data}`, ngưỡng đặt trước và lưu cùng kết quả; **không** dùng khóa `probability`/`accuracy`.
 
-**TV4 — Prompt Injection.** Một experiment chạy cả hai nhánh `defenses` với cùng ca, cùng mô hình, cùng `repeat` (D-07). Gọi Ollama (trên Colab, D-18) **chỉ** tới `settings.ollama_url` kèm `Authorization: Bearer settings.ollama_api_key`: `https` bắt buộc, host thuộc `ollama_allowed_hosts`, `follow_redirects=False`, timeout `ollama_connect_timeout`/`ollama_read_timeout`, không đưa token vào log/event/kết quả, phản hồi mô hình là **dữ liệu không tin cậy** (không thực thi, không dùng làm URL/đường dẫn). Chỉ gửi văn bản tổng hợp trong `prompt_cases` (FR-PI-12). `metrics.model_name`, `metrics.endpoint_kind = "colab"`, và `limitations` nêu mô hình chạy trên dịch vụ ngoài (FR-PI-11). Thành phần `ollama_chat` có `kind="real"` **chỉ khi** có phản hồi thật. ASR chỉ tính khi mọi lượt trong nhánh đã được chấm; còn `None` thì ghi "chưa đủ dữ liệu". Liệt kê cả ca phòng thủ không hiệu quả (`metrics.failed_cases`). *Lưu ý:* hiện chưa có cơ chế để service báo `DEP_UNAVAILABLE` hay lưu kết quả một phần khi Colab ngắt giữa chừng (FR-PI-10); điều đó cần mở rộng hợp đồng (ví dụ một ngoại lệ có `code` và `partial_records`). Chưa làm ở bản này — hãy báo TV1 trước khi viết client để thống nhất.
+**TV4 — Prompt Injection.** Một experiment chạy cả hai nhánh `defenses` với cùng ca, cùng mô hình, cùng `repeat` (D-07). Gọi Ollama (trên Colab, D-18) **chỉ** tới `settings.ollama_url` kèm `Authorization: Bearer settings.ollama_api_key`: `https` bắt buộc, host thuộc `ollama_allowed_hosts`, `follow_redirects=False`, timeout `ollama_connect_timeout`/`ollama_read_timeout`, không đưa token vào log/event/kết quả, phản hồi mô hình là **dữ liệu không tin cậy** (không thực thi, không dùng làm URL/đường dẫn). Chỉ gửi văn bản tổng hợp trong `prompt_cases` (FR-PI-12). `metrics.model_name`, `metrics.endpoint_kind = "colab"`, và `limitations` nêu mô hình chạy trên dịch vụ ngoài (FR-PI-11). Thành phần `ollama_chat` có `kind="real"` **chỉ khi** có phản hồi thật. ASR chỉ tính khi mọi lượt trong nhánh đã được chấm; còn `None` thì ghi "chưa đủ dữ liệu". Liệt kê cả ca phòng thủ không hiệu quả (`metrics.failed_cases`). Colab ngắt giữa chừng (FR-PI-10): ném `LabRunError("DEP_UNAVAILABLE", ..., {"prompt_runs": rows_da_co})` (mục 6b) để experiment `failed` đúng mã mà không mất các lượt đã chạy; các lượt từng phần không được dùng để tính ASR.
 
 **TV4 — API Security.** Gửi **request HTTP thật** (`httpx`) tới `/sandbox/echo` trên `127.0.0.1` từ worker; đích cố định, không nhận URL (FR-API-04). Đo số gửi/200/429 và độ trễ p50/p95 (FR-API-03); mỗi `429` ghi `ctx.emit("warn", "rate_limited", …)`. Trần `MAX_API_LAB_REQUESTS`. `limitations` luôn nêu Rate Limiting đơn lẻ không chống được mọi dạng DoS/DDoS (FR-API-06). `/sandbox/echo` do TV1 dựng khung (T-12); tham số kịch bản (`window`, `max_requests`) do TV4 chọn.
 
@@ -263,3 +290,4 @@ Chạy cả vòng đời qua orchestrator (hàng đợi, ghi DB): copy cách d�
 | Phiên bản | Ngày | Nội dung |
 |---|---|---|
 | 0.1 | 19/11/2026 | Bản đầu (T-11): hợp đồng `LabService`, luật G1–G7, `ctx.emit`/`ctx.check`, `records`, timeout, mẫu và checklist, việc riêng từng Lab |
+| 0.2 | 20/11/2026 | Thêm `LabRunError` (mục 6b): báo `DEP_UNAVAILABLE`/`JOB_TIMEOUT` và lưu `partial_records` khi phụ thuộc ngoài hỏng giữa chừng; sửa mục 3 và việc riêng TV4 |

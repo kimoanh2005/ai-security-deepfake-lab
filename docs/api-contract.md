@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.5 (router experiments T-09 đã nối; xem phụ lục) |
+| **Phiên bản** | 0.6 (thêm `DEP_UNAVAILABLE` do service báo và lưu lượt chạy một phần; xem phụ lục) |
 | **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
@@ -370,7 +370,7 @@ Client lấy kết quả bằng cách **poll `Location`** theo gợi ý `Retry-A
 }
 ```
 
-Khi `failed`: `result: null` và `"error": { "code": "JOB_TIMEOUT", "message": "…" }`. Không có kết quả một phần ở MVP (kết quả bị `result_guard` từ chối không được lưu nội dung; lý do nằm ở `lab_results.guard_details` và event `result_rejected`).
+Khi `failed`: `result: null` và `"error": { "code": "JOB_TIMEOUT", "message": "…" }`. Không có **kết quả** một phần ở MVP: `result` luôn `null` và `result_kind` luôn `null` khi `failed` (kết quả bị `result_guard` từ chối không được lưu nội dung; lý do nằm ở `lab_results.guard_details` và event `result_rejected`). Riêng `DEP_UNAVAILABLE` (và `JOB_TIMEOUT` do service báo), các lượt gọi mô hình đã chạy thật vẫn được lưu dạng dữ liệu thô (`prompt_runs`); chúng không có nhãn, không thuộc tỉ lệ nào, và chỉ đọc được qua `prompt-runs` khi endpoint đó có (chưa làm). `error.message` là câu cố định, không chứa chi tiết mạng.
 
 Mã lỗi của job (`error.code`), khác mã lỗi HTTP ở 4.3:
 
@@ -379,8 +379,8 @@ Mã lỗi của job (`error.code`), khác mã lỗi HTTP ở 4.3:
 | `JOB_TIMEOUT` | Job chạy quá thời gian tối đa của Lab (`JOB_TIMEOUT_<LAB>`) | `timeout` |
 | `RESULT_REJECTED` | `result_guard` từ chối kết quả của service (nhãn cao hơn trần Lab, thiếu `limitations`, khóa `accuracy`/`probability` tự đặt, `records` sai…) | `result_rejected` (`data.failed` liệt kê kiểm tra không đạt) |
 | `INTERRUPTED` | Máy chủ khởi động lại khi job đang `running` | `interrupted` |
-| `INTERNAL_ERROR` | Service ném ngoại lệ ngoài dự kiến hoặc lỗi ghi CSDL; chi tiết chỉ ở log máy chủ | `job_failed` |
-| `DEP_UNAVAILABLE` | *(sẽ có ở bản Ollama/Colab, FR-PI-10)* phụ thuộc ngoài mất kết nối giữa chừng | — |
+| `INTERNAL_ERROR` | Service ném ngoại lệ ngoài dự kiến (hoặc báo mã lỗi không được phép) hoặc lỗi ghi CSDL; chi tiết chỉ ở log máy chủ | `job_failed` |
+| `DEP_UNAVAILABLE` | Phụ thuộc ngoài (Ollama trên Colab) mất kết nối giữa chừng, do service báo (FR-PI-10) | `dep_unavailable` (`data.partial_runs` = số lượt đã chạy được lưu) |
 
 `result_kind` là mức **yếu nhất** của `components` và không mạnh hơn `status` của Lab (SPEC-01 mục 6). Frontend phải hiển thị cả `result_kind`, `components` và `limitations`.
 
@@ -691,3 +691,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.3 | 18/11/2026 | Đăng nhập là `POST /auth/login` (200, không `Location`); thêm D-19, D-20; định danh media-asset là `med_`; chốt chữ ký `LabService` (11.3); ghi rõ mặc định/ràng buộc thân yêu cầu từng Lab (mục 5); `rate_limit_modes` là boolean; mô tả 401 đăng nhập và giới hạn tần suất đăng nhập |
 | 0.4 | 19/11/2026 | Công bố trong repo (T-11): thêm mục 0 (trạng thái triển khai, đối chiếu `/openapi.json`) và 6.7 (ví dụ thật); mã lỗi job (`JOB_TIMEOUT`, `RESULT_REJECTED`, `INTERRUPTED`, `INTERNAL_ERROR`) ở 6.1; ghi rõ `config` là payload đã chuẩn hóa (5.5), `LAB_DISABLED` kiểm tra trước validate, 404 khi `{lab}` không tồn tại, 503 khi Lab chưa có service (4.3); hàng đợi và khởi động lại (mục 8) |
 | 0.5 | 19/11/2026 | T-09: nối router experiments (tạo, danh sách, chi tiết + ETag, events, report theo `Accept`); bổ sung hành vi cụ thể ở mục 0 (report `409` khi chưa kết thúc, thiếu thân → `400`) |
+| 0.6 | 20/11/2026 | `error.code = DEP_UNAVAILABLE` (event `dep_unavailable`) khi phụ thuộc ngoài mất kết nối giữa chừng (FR-PI-10); job `failed` vẫn có `result`/`result_kind` = `null` nhưng các lượt `prompt_runs` đã chạy được lưu; `error.message` là câu cố định (6.1) |

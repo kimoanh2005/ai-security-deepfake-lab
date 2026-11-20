@@ -72,6 +72,34 @@ class JobCancelled(Exception):
     """Ném bởi ctx.check() khi hết thời gian hoặc bị hủy."""
 
 
+# Mã lỗi service được phép báo qua LabRunError (FR-PI-10). Mã khác bị orchestrator đổi thành INTERNAL_ERROR.
+LAB_RUN_ERROR_CODES: tuple[str, ...] = ("DEP_UNAVAILABLE", "JOB_TIMEOUT")
+
+
+class LabRunError(Exception):
+    """Service báo job thất bại có chủ đích, kèm mã lỗi và dữ liệu đã có trước khi lỗi (FR-PI-10).
+
+    Dùng khi phụ thuộc ngoài mất kết nối giữa chừng (Ollama trên Colab ngắt phiên): experiment thành `failed` với
+    `error.code = code`, còn `partial_records` (cùng dạng `LabResult.records`) vẫn được lưu để không mất các lượt
+    đã chạy thật. Không có kết quả cấp experiment: không `lab_results`, không `result_kind`.
+
+    - `code` ∈ LAB_RUN_ERROR_CODES; mã khác → `INTERNAL_ERROR`.
+    - `message` chỉ ghi log máy chủ, KHÔNG trả cho client (thông điệp ngoại lệ mạng có thể chứa địa chỉ đường hầm).
+    - `partial_records` đi qua cùng kiểm tra `records` của guard; sai → bị bỏ (experiment vẫn `failed`).
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str = "",
+        partial_records: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        super().__init__(f"{code}: {message}" if message else code)
+        self.code = code
+        self.message = message
+        self.partial_records = partial_records or {}
+
+
 class RunContext:
     def __init__(
         self,

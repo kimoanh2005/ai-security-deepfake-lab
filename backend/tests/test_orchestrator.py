@@ -16,7 +16,7 @@ from app.main import create_app
 from app.models import Experiment, ExperimentEvent, Lab, PromptCase, PromptRun, User
 from app.models import LabResult as LabResultRow
 from app.seed import ensure_labs
-from app.services.base import Component, LabResult, LabValidationError, RunContext
+from app.services.base import Component, LabResult, LabRunError, LabValidationError, RunContext
 
 API_PAYLOAD = {"scenario_code": "burst-30"}
 
@@ -449,3 +449,118 @@ def test_records_for_unknown_table_rejected(app, make_orch, user_id):
     assert snap.exp.state == "failed" and snap.exp.error_code == "RESULT_REJECTED"
     with app.state.session_factory() as db:
         assert db.scalar(select(func.count()).select_from(User)) == 1  # chỉ user của fixture
+
+
+# ---- LabRunError: lỗi có mã + lưu kết quả một phần (FR-PI-10) ----
+
+GOOD_ROW = {"case_code": "PI-01", "attempt": 1, "defense": False, "response": "r1", "latency_ms": 120, "model_name": "m"}
+RULE_ROW = {**GOOD_ROW, "defense": True, "task_violated": False, "judged_by": "rule"}
+
+
+def raising(code, rows=None, message="chi tiết nội bộ http://abc.trycloudflare.com token=SECRET"):
+    def fn(ctx, payload):
+        ctx.emit("info", "llm_call", "đã gọi 2 lượt")
+        raise LabRunError(code, message, {"prompt_runs": rows} if rows is not None else None)
+
+    return fn
+
+
+def test_dep_unavailable_keeps_partial_runs_and_fails_with_code(app, make_orch, user_id):
+    case_id = add_case(app)
+    snap = run_one(app, make_orch(raising("DEP_UNAVAILABLE", [GOOD_ROW, RULE_ROW])), user_id)
+    assert snap.exp.state == "failed" and snap.exp.error_code == "DEP_UNAVAILABLE"
+    assert snap.result is None  # không có kết quả cấp experiment, không gán nhãn thành công
+    assert len(snap.runs) == 2 and all(r.case_id == case_id for r in snap.runs)
+    by_defense = {r.defense: r for r in snap.runs}
+    assert by_defense[0].task_violated is None and by_defense[1].judged_by == "rule"
+    assert types(snap) == ["queued", "job_started", "llm_call", "dep_unavailable"]
+    assert snap.events[-1].data_json == {"partial_runs": 2}
+    assert snap.exp.finished_at
+
+
+def test_run_error_message_and_secrets_never_reach_client_or_events(app, make_orch, user_id):
+    add_case(app)
+    snap = run_one(app, make_orch(raising("DEP_UNAVAILABLE", [GOOD_ROW])), user_id)
+    blob = " ".join([snap.exp.error_message or ""] + [f"{e.message} {e.data_json}" for e in snap.events])
+    assert "SECRET" not in blob and "trycloudflare" not in blob and "chi tiết nội bộ" not in blob
+
+
+def test_run_error_without_partial_records(app, make_orch, user_id):
+    snap = run_one(app, make_orch(raising("DEP_UNAVAILABLE")), user_id)
+    assert snap.exp.state == "failed" and snap.exp.error_code == "DEP_UNAVAILABLE"
+    assert snap.runs == [] and snap.events[-1].data_json == {"partial_runs": 0}
+
+
+def test_run_error_job_timeout_code_is_allowed(app, make_orch, user_id):
+    add_case(app)
+    snap = run_one(app, make_orch(raising("JOB_TIMEOUT", [GOOD_ROW])), user_id)
+    assert snap.exp.error_code == "JOB_TIMEOUT" and len(snap.runs) == 1
+    assert types(snap)[-1] == "timeout"
+
+
+@pytest.mark.parametrize("code", ["RESULT_REJECTED", "INTERRUPTED", "NOT_A_CODE", "", "dep_unavailable"])
+def test_run_error_unknown_code_becomes_internal_error(app, make_orch, user_id, code):
+    add_case(app)
+    snap = run_one(app, make_orch(raising(code, [GOOD_ROW])), user_id)
+    assert snap.exp.state == "failed" and snap.exp.error_code == "INTERNAL_ERROR"
+    assert types(snap)[-1] == "job_failed"
+    assert len(snap.runs) == 1  # dữ liệu đã chạy vẫn giữ; chỉ mã lỗi bị chuẩn hóa
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"defense": True}],  # thiếu case_code
+        [{"case_code": "PI-01", "defense": True, "task_violated": True}],  # tự chấm không kèm 'rule'
+        [{"case_code": "PI-01", "defense": True, "task_violated": True, "judged_by": "human"}],
+        [GOOD_ROW, {"case_code": "PI-99", "defense": True}],  # mã ca không có trong prompt_cases
+        [{**GOOD_ROW, "bia": 1}],  # cột ngoài danh sách
+    ],
+)
+def test_run_error_invalid_partial_records_dropped_entirely_but_job_still_fails(app, make_orch, user_id, rows):
+    add_case(app)
+    snap = run_one(app, make_orch(raising("DEP_UNAVAILABLE", rows)), user_id)
+    assert snap.exp.state == "failed" and snap.exp.error_code == "DEP_UNAVAILABLE"
+    assert snap.runs == []  # không lưu một nửa
+    assert snap.events[-1].data_json == {"partial_runs": 0, "partial_dropped": True}
+
+
+def test_run_error_unknown_table_in_partial_records_dropped(app, make_orch, user_id):
+    def fn(ctx, payload):
+        raise LabRunError("DEP_UNAVAILABLE", "x", {"users": [{"email": "a@b"}]})
+
+    snap = run_one(app, make_orch(fn), user_id)
+    assert snap.exp.error_code == "DEP_UNAVAILABLE"
+    with app.state.session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(User)) == 1
+
+
+def test_run_error_oversized_partial_records_dropped(app, make_orch, user_id):
+    add_case(app)
+    big = {**GOOD_ROW, "response": "x" * 5000}
+    snap = run_one(app, make_orch(raising("DEP_UNAVAILABLE", [big]), max_result_bytes=1000), user_id)
+    assert snap.exp.error_code == "DEP_UNAVAILABLE" and snap.runs == []
+
+
+def test_worker_survives_run_error_and_queue_continues(app, make_orch, user_id):
+    add_case(app)
+    state = {"n": 0}
+
+    def fn(ctx, payload):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise LabRunError("DEP_UNAVAILABLE", "mất kết nối", {"prompt_runs": [GOOD_ROW]})
+        return ok_result()
+
+    orch = make_orch(fn)
+    orch.start()
+    first = orch.submit(user_id, "api_lab", API_PAYLOAD)
+    second = orch.submit(user_id, "api_lab", API_PAYLOAD)
+    assert orch.wait_idle()
+    assert snapshot(app, first.id).exp.error_code == "DEP_UNAVAILABLE"
+    assert snapshot(app, second.id).exp.state == "done"
+
+
+def test_run_error_is_plain_exception_with_defaults():
+    err = LabRunError("DEP_UNAVAILABLE")
+    assert isinstance(err, Exception) and err.partial_records == {} and err.message == ""

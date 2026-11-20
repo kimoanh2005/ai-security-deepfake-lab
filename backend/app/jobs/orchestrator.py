@@ -9,10 +9,15 @@ Quy tắc (SPEC 5.4): chỉ module này ghi `experiments`, `experiment_events`, 
 của một job được ghi trong MỘT giao dịch cùng với việc chuyển trạng thái cuối.
 
 Mã lỗi của job (`experiments.error_code`), khác mã lỗi HTTP:
-    JOB_TIMEOUT      quá thời gian tối đa của Lab (FR-EXP-05)
+    JOB_TIMEOUT      quá thời gian tối đa của Lab (FR-EXP-05), hoặc service báo LabRunError("JOB_TIMEOUT")
     RESULT_REJECTED  result_guard (hoặc kiểm tra records) từ chối kết quả (FR-EXP-06); lý do ở lab_results.guard_details
     INTERRUPTED      máy chủ khởi động lại khi job đang chạy (FR-EXP-04)
-    INTERNAL_ERROR   service ném ngoại lệ không lường trước hoặc lỗi ghi DB; chi tiết chỉ ghi log, không trả client
+    DEP_UNAVAILABLE  service báo LabRunError("DEP_UNAVAILABLE"): phụ thuộc ngoài mất kết nối giữa chừng (FR-PI-10)
+    INTERNAL_ERROR   service ném ngoại lệ không lường trước (hoặc LabRunError mã lạ) hoặc lỗi ghi DB; chi tiết chỉ
+                     ghi log, không trả client
+
+LabRunError (FR-PI-10): `failed` với mã do service đặt (chỉ LAB_RUN_ERROR_CODES), và `partial_records` hợp lệ vẫn được
+lưu (cùng giao dịch với việc đánh dấu `failed`). Không có `lab_results`: không có kết quả cấp experiment.
 
 Hết giờ: orchestrator gọi `ctx.cancel()` để `ctx.check()` của service ném JobCancelled. Một service không bao giờ gọi
 `ctx.check()` thì không dừng được (Python không giết được thread): job vẫn bị đánh dấu `failed` sau thời gian ân hạn
@@ -37,8 +42,15 @@ from app.core.errors import AppError
 from app.models import Experiment, ExperimentEvent, Lab, PromptCase, PromptRun
 from app.models import LabResult as LabResultRow  # bảng lab_results; LabResult của service là dataclass khác
 from app.models.database import now_iso
-from app.services.base import JobCancelled, LabService, LabValidationError, RunContext
-from app.services.guard import run_guard
+from app.services.base import (
+    LAB_RUN_ERROR_CODES,
+    JobCancelled,
+    LabRunError,
+    LabService,
+    LabValidationError,
+    RunContext,
+)
+from app.services.guard import check_records, run_guard
 from app.services.registry import SERVICES
 
 log = logging.getLogger("app.jobs")
@@ -193,6 +205,8 @@ class Orchestrator:
                 log.warning("Job %s quá hạn và không dừng khi được báo hủy; thread bị bỏ rơi.", exp_id)
                 note += " Service không dừng sau khi được báo hủy (thiếu ctx.check()?)."
             self._fail(exp_id, "JOB_TIMEOUT", "Quá thời gian tối đa của Lab.", "timeout", events, note=note)
+        elif outcome == "run_error":
+            self._fail_run_error(exp_id, service_key, value, events)
         else:
             log.error("Service %s ném ngoại lệ ở job %s", service_key, exp_id, exc_info=value)
             self._fail(
@@ -201,7 +215,8 @@ class Orchestrator:
             )
 
     def _run_service(self, service: LabService, ctx: RunContext, config: dict[str, Any], timeout: float):
-        """Chạy service trong thread con. Trả ("ok", LabResult) | ("timeout", None) | ("abandoned", None) | ("error", exc)."""
+        """Chạy service trong thread con. Trả ("ok", LabResult) | ("timeout", None) | ("abandoned", None)
+        | ("run_error", LabRunError) | ("error", exc)."""
         holder: dict[str, Any] = {}
 
         def target() -> None:
@@ -209,6 +224,8 @@ class Orchestrator:
                 holder["result"] = service.run(ctx, config)
             except JobCancelled:
                 holder["cancelled"] = True
+            except LabRunError as exc:
+                holder["run_error"] = exc
             except BaseException as exc:  # noqa: BLE001 - mọi lỗi của service đều phải thành `failed`
                 holder["error"] = exc
 
@@ -221,6 +238,8 @@ class Orchestrator:
             return ("abandoned", None) if runner.is_alive() else ("timeout", None)
         if holder.get("cancelled"):
             return "timeout", None
+        if "run_error" in holder:
+            return "run_error", holder["run_error"]
         if "error" in holder:
             return "error", holder["error"]
         return "ok", holder.get("result")
@@ -267,21 +286,7 @@ class Orchestrator:
                         guard_details=report.as_dict(),
                     )
                 )
-                for row in result.records.get("prompt_runs", []):
-                    violated = row.get("task_violated")
-                    db.add(
-                        PromptRun(
-                            experiment_id=exp_id,
-                            case_id=case_ids[row["case_code"]],
-                            attempt=row.get("attempt", 1),
-                            defense=int(row["defense"]),
-                            response=row.get("response"),
-                            latency_ms=row.get("latency_ms"),
-                            model_name=row.get("model_name"),
-                            task_violated=None if violated is None else int(violated),
-                            judged_by=row.get("judged_by"),
-                        )
-                    )
+                self._add_prompt_runs(db, exp_id, result.records.get("prompt_runs", []), case_ids)
                 exp.state = "done"
                 db.add(
                     ExperimentEvent(
@@ -310,6 +315,68 @@ class Orchestrator:
             exp.finished_at = now_iso()
             db.commit()
 
+    @staticmethod
+    def _add_prompt_runs(db: Session, exp_id: str, rows: list[dict[str, Any]], case_ids: dict[str, str]) -> None:
+        for row in rows:
+            violated = row.get("task_violated")
+            db.add(
+                PromptRun(
+                    experiment_id=exp_id,
+                    case_id=case_ids[row["case_code"]],
+                    attempt=row.get("attempt", 1),
+                    defense=int(row["defense"]),
+                    response=row.get("response"),
+                    latency_ms=row.get("latency_ms"),
+                    model_name=row.get("model_name"),
+                    task_violated=None if violated is None else int(violated),
+                    judged_by=row.get("judged_by"),
+                )
+            )
+
+    def _vet_partial_records(self, exp_id: str, records: Any) -> tuple[list[dict[str, Any]], dict[str, str], str]:
+        """Kiểm tra `partial_records` như records của kết quả đầy đủ. Trả (dòng prompt_runs, {case_code: case_id}, lý do
+        bỏ). Có lý do bỏ → không lưu dòng nào (không lưu một nửa)."""
+        if not records:
+            return [], {}, ""
+        problem = check_records(records)
+        if not problem:
+            try:
+                size = len(json.dumps(records, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+            except (TypeError, ValueError) as exc:
+                problem = f"không tuần tự hóa được thành JSON: {exc}"
+            else:
+                if size > self._settings.max_result_bytes:
+                    problem = f"records {size} byte vượt giới hạn {self._settings.max_result_bytes}."
+        rows = records.get("prompt_runs", []) if not problem else []
+        case_ids: dict[str, str] = {}
+        if rows:
+            problem, case_ids = self._resolve_case_ids({"prompt_runs": rows})
+        if problem:
+            log.warning("Job %s: partial_records bị bỏ: %s", exp_id, problem)
+            return [], {}, problem
+        return rows, case_ids, ""
+
+    def _fail_run_error(self, exp_id: str, service_key: str, exc: LabRunError, events: list[dict[str, Any]]) -> None:
+        """Service báo LabRunError (FR-PI-10): `failed` với mã của service, giữ partial_records hợp lệ."""
+        code = exc.code if exc.code in LAB_RUN_ERROR_CODES else "INTERNAL_ERROR"
+        if code != exc.code:
+            log.warning("Service %s báo mã lỗi không được phép %r ở job %s; đổi thành INTERNAL_ERROR.", service_key, exc.code, exp_id)
+        log.error("Service %s báo %s ở job %s: %s", service_key, exc.code, exp_id, exc.message)
+        rows, case_ids, dropped = self._vet_partial_records(exp_id, exc.partial_records)
+        messages = {
+            "DEP_UNAVAILABLE": "Dịch vụ phụ thuộc không khả dụng giữa chừng.",
+            "JOB_TIMEOUT": "Quá thời gian tối đa của Lab.",
+            "INTERNAL_ERROR": "Lab gặp lỗi khi chạy.",
+        }
+        event_types = {"DEP_UNAVAILABLE": "dep_unavailable", "JOB_TIMEOUT": "timeout", "INTERNAL_ERROR": "job_failed"}
+        data: dict[str, Any] = {"partial_runs": len(rows)}
+        if dropped:
+            data["partial_dropped"] = True
+        self._fail(
+            exp_id, code, messages[code], event_types[code], events,
+            data=data, prompt_rows=rows, case_ids=case_ids,
+        )
+
     def _fail(
         self,
         exp_id: str,
@@ -320,6 +387,8 @@ class Orchestrator:
         *,
         note: str | None = None,
         data: dict[str, Any] | None = None,
+        prompt_rows: list[dict[str, Any]] | None = None,
+        case_ids: dict[str, str] | None = None,
     ) -> None:
         with self._sf() as db:
             exp = db.get(Experiment, exp_id)
@@ -330,6 +399,8 @@ class Orchestrator:
             exp.error_message = message
             exp.finished_at = now_iso()
             self._add_events(db, exp_id, events or [])
+            if prompt_rows:
+                self._add_prompt_runs(db, exp_id, prompt_rows, case_ids or {})
             db.add(
                 ExperimentEvent(
                     experiment_id=exp_id, level="error", event_type=event_type, message=note or message,

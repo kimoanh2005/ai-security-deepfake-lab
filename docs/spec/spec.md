@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | **Tài liệu** | SPEC-01 · Đặc tả yêu cầu và kiến trúc backend (hợp đồng API chi tiết: API-01) |
-| **Phiên bản** | 0.5 (bản nháp để nhóm xác nhận; chốt hành vi orchestrator theo bản cài đặt T-08) |
+| **Phiên bản** | 0.6 (bản nháp để nhóm xác nhận; thêm `LabRunError`: lỗi có mã và lưu kết quả một phần, FR-PI-10) |
 | **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 (Trưởng nhóm, kiến trúc & backend) |
 | **Căn cứ** | Bản đề xuất sản phẩm (SP); báo cáo "AI Security và Deepfake" (1.3.2, 3.2.1–3.2.3); thiết kế backend v0 (Phần B); quét repo ngày 15/11/2026 |
 | **Trạng thái** | Các mục đánh dấu **[ĐỀ XUẤT]** là quyết định mặc định của TV1, chưa được nhóm xác nhận. Các mục **[MỞ]** cần nhóm quyết. |
 
-Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.3*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
+Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.6*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
 
 ---
 
@@ -253,10 +253,13 @@ Mã lỗi của job (`experiments.error_code`, trả ở `error.code`; khác mã
 
 | `error.code` | Khi nào | Event cuối |
 |---|---|---|
-| `JOB_TIMEOUT` | Quá `JOB_TIMEOUT_<LAB>` (FR-EXP-05) | `timeout` |
+| `JOB_TIMEOUT` | Quá `JOB_TIMEOUT_<LAB>` (FR-EXP-05), hoặc service báo `LabRunError("JOB_TIMEOUT")` | `timeout` |
 | `RESULT_REJECTED` | `result_guard` hoặc kiểm tra `records` từ chối (FR-EXP-06); lý do ở `lab_results.guard_details` | `result_rejected` |
 | `INTERRUPTED` | Máy chủ khởi động lại khi job đang chạy (FR-EXP-04) | `interrupted` |
-| `INTERNAL_ERROR` | Service ném ngoại lệ ngoài dự kiến, hoặc lỗi ghi CSDL; chi tiết chỉ ở log, không trả client | `job_failed` |
+| `DEP_UNAVAILABLE` | Service báo `LabRunError("DEP_UNAVAILABLE")`: phụ thuộc ngoài (Ollama trên Colab) mất kết nối giữa chừng (FR-PI-10); các dòng `prompt_runs` hợp lệ đã có vẫn được lưu | `dep_unavailable` |
+| `INTERNAL_ERROR` | Service ném ngoại lệ ngoài dự kiến (hoặc `LabRunError` mã lạ), hoặc lỗi ghi CSDL; chi tiết chỉ ở log, không trả client | `job_failed` |
+
+`LabRunError` (FR-PI-10): service ném `LabRunError(code, message, partial_records)` khi biết chắc phụ thuộc ngoài hỏng. Orchestrator đánh dấu `failed` với `error.code = code` và lưu `partial_records` (cùng giao dịch). Quy tắc: (1) `code` chỉ nhận `DEP_UNAVAILABLE` hoặc `JOB_TIMEOUT`, mã khác thành `INTERNAL_ERROR` (service không tự đặt mã tùy ý, nhất là `RESULT_REJECTED`/`INTERRUPTED`); (2) `message` chỉ ghi log máy chủ, **không** trả client hay ghi vào event (thông điệp lỗi mạng có thể chứa địa chỉ đường hầm Colab); `error.message` là câu cố định theo mã; (3) `partial_records` đi qua cùng kiểm tra `records` của guard (bảng/cột cho phép, kiểu, `task_violated` chỉ kèm `judged_by='rule'`, `case_code` phải có trong `prompt_cases`) và giới hạn `MAX_RESULT_BYTES`; **sai một dòng là bỏ cả nhóm** (không lưu một nửa), event cuối có `data.partial_dropped=true`; (4) không có `lab_results` và không có `result_kind`: kết quả từng phần chỉ là dữ liệu thô, không bao giờ được gán nhãn thành công hay tính vào tỉ lệ (FR-PI-07); (5) event cuối mang `data.partial_runs` là số dòng đã lưu.
 
 Cơ chế timeout: worker chạy `service.run` trong một thread con. Hết giờ, orchestrator gọi `ctx.cancel()` để `ctx.check()` ném `JobCancelled`. Service không gọi `ctx.check()` thì không dừng được (Python không giết được thread): sau thời gian ân hạn (5 s) job vẫn bị đánh dấu `failed` và thread bị bỏ rơi để hàng đợi không kẹt. Vì vậy **service dài phải gọi `ctx.check()` định kỳ**.
 
@@ -367,7 +370,7 @@ Mỗi bảng thêm bằng migration riêng; không sửa tay tệp `.db`.
 
 ## 8. Hợp đồng API
 
-Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.3** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
+Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.6** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
 
 ### 8.1. Nguyên tắc
 
@@ -439,6 +442,8 @@ class LabService(Protocol):
 
 **Quy ước `records`.** Chỉ bảng và cột trong `RECORD_COLUMNS` (hiện có `prompt_runs`: `case_code`, `attempt`, `defense`, `response`, `latency_ms`, `model_name`, `task_violated`, `judged_by`). Service dùng `case_code`; orchestrator tra `prompt_cases` để đổi sang `case_id` và tự thêm `id`, `experiment_id`, `created_at`. `task_violated` mặc định `None`; chỉ được đặt cùng `judged_by="rule"`. Giá trị `human` chỉ đến từ API chấm tay (FR-PI-06).
 
+**`LabRunError`.** Ném từ `run` khi phụ thuộc ngoài hỏng giữa chừng, thay cho ngoại lệ thường (thường sẽ thành `INTERNAL_ERROR` và mất dữ liệu đã chạy): `raise LabRunError("DEP_UNAVAILABLE", "chi tiết cho log", {"prompt_runs": rows_da_co})`. Chi tiết hành vi ở mục 5.2.
+
 Nghĩa vụ của người cài đặt: (1) không mở kết nối ra ngoài, trừ client Ollama dùng `OLLAMA_URL`/`OLLAMA_API_KEY` đã cấu hình (D-18); (2) luôn điền `limitations`; (3) không đủ điều kiện chạy thật thì trả nhãn thấp hơn, **không bịa số liệu**; `result_kind` bằng mức yếu nhất của `components` (D-10); (4) không ghi DB và không import `app.api`, `app.models`, `app.jobs`, dùng `records`; (5) dùng `ctx.emit` thay vì `print`; (6) gọi `ctx.check()` định kỳ trong vòng lặp dài để dừng sớm khi hết giờ.
 
 ### 9.2. TV1 ↔ TV5 (frontend)
@@ -500,7 +505,7 @@ Không ghi: mật khẩu, token, nội dung tệp, toàn bộ nội dung prompt/
 
 ### 10.4. Danh mục `event_type` khởi đầu
 
-`queued`, `job_started`, `job_finished`, `job_failed`, `result_rejected`, `timeout`, `interrupted`, `frame_extracted`, `llm_call`, `request_sent`, `rate_limited`, `verification_saved`, `judged`.
+`queued`, `job_started`, `job_finished`, `job_failed`, `dep_unavailable`, `result_rejected`, `timeout`, `interrupted`, `frame_extracted`, `llm_call`, `request_sent`, `rate_limited`, `verification_saved`, `judged`.
 Loại bảo mật: `login_failed`, `file_rejected`, `rate_limited`, `lab_toggled`.
 
 ### 10.5. Biến cấu hình (`.env`)
@@ -632,3 +637,4 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 | 0.3 | 16/11/2026 | Đăng nhập bằng email; bỏ bảng security_events, api_lab_runs, model_registry khỏi MVP (khớp ER chốt, D-09); Ollama của TV4 chạy trên Google Colab: thêm D-18; sửa 3.1, 4.5 (FR-PI-04, thêm FR-PI-10..12), 5.1, 5.4, 5.5, 9.1, 9.4, 10.1, 10.5, FR-OPS-01, 11.1, MỞ-5/MỞ-8, bảng rủi ro |
 | 0.4 | 18/11/2026 | Chốt chữ ký `LabService` theo bản cài đặt T-07: `validate(payload, settings)`, `run(ctx, payload)`; `LabResult`/`Component` là dataclass; thêm quy ước `records` (`case_code`, `judged_by='rule'`); guard có thêm `shape` và `records`; định danh có tiền tố (`med_`…); thêm `MAX_EVENTS_PER_EXPERIMENT`, `MAX_RESULT_BYTES`; sửa 5.3, 6.1, 7.3, 9.1, 10.5; API-01 lên v0.3 |
 | 0.5 | 19/11/2026 | Chốt hành vi orchestrator theo T-08: mã lỗi job (`JOB_TIMEOUT`, `RESULT_REJECTED`, `INTERRUPTED`, `INTERNAL_ERROR`) và cơ chế timeout/hủy (5.2); khởi động lại xếp lại job `queued` (FR-EXP-04); kết quả bị từ chối vẫn lưu `lab_results` với `guard_passed=0` và không ghi dòng nghiệp vụ (5.3); guard kiểm kiểu `prompt_runs` (6.1); thêm event `job_failed` (10.4); biến `JOB_TIMEOUT_*` (10.5) |
+| 0.6 | 20/11/2026 | Thêm `LabRunError` (FR-PI-10): service báo lỗi có mã (`DEP_UNAVAILABLE`, `JOB_TIMEOUT`) và lưu `partial_records` hợp lệ; mã lạ → `INTERNAL_ERROR`; `message` không trả client; không có `lab_results` cho job lỗi này; thêm event `dep_unavailable` (5.2, 9.1, 10.4); API-01 lên v0.6 |

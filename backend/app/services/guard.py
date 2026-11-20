@@ -88,8 +88,8 @@ def _check_prompt_run_types(row: dict[str, Any]) -> str:
     return ""
 
 
-def _check_records(records: Any) -> str:
-    """Trả chuỗi lỗi (rỗng nếu ổn)."""
+def check_records(records: Any) -> str:
+    """Trả chuỗi lỗi (rỗng nếu ổn). Dùng chung cho kết quả đầy đủ và `LabRunError.partial_records`."""
     if not isinstance(records, dict):
         return "records phải là object {tên_bảng: [dòng, ...]}."
     for table, rows in records.items():
@@ -185,6 +185,6 @@ def run_guard(result: Any, lab_ceiling: str, settings: Settings) -> GuardReport:
         g7, detail = False, f"không tuần tự hóa được thành JSON: {exc}"
     r.add("G7_serializable_and_size", g7, detail)
 
-    rec = _check_records(result.records)
+    rec = check_records(result.records)
     r.add("records", not rec, rec)
     return r
