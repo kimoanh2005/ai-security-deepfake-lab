@@ -1,15 +1,23 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.api import prompt, api_lab, experiments, summary_lab
 
 app = FastAPI(title="AI Security & Deepfake Lab API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
+    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Gắn các router của TV4: Prompt Injection & API Security Lab
+app.include_router(prompt.router)
+app.include_router(api_lab.router)
+app.include_router(experiments.router)
+app.include_router(summary_lab.router)
 
 @app.get("/")
 def root():

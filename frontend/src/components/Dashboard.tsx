@@ -22,6 +22,7 @@ import {
   WifiOff,
 } from 'lucide-react'
 import { getLabs, type Lab } from '../services/api'
+import SecurityLab from './SecurityLab'
 
 const labPresentation = [
   {
@@ -217,6 +218,7 @@ function LabGrid({
 }
 
 function LabDetail({ lab }: { lab: Lab }) {
+  if (lab.id === 2 || lab.id === 3) return <SecurityLab key={lab.id} initialTab={lab.id === 3 ? 'rate' : 'chat'} />
   const presentation = getLabPresentation(lab)
   const Icon = presentation.icon
 

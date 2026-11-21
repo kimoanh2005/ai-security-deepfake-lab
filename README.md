@@ -1,111 +1,56 @@
 # AI Security & Deepfake Lab
 
-Ứng dụng học tập về AI Security và Deepfake, gồm backend FastAPI và frontend React/Vite. Giao diện TV5 hiện lấy danh sách Lab thật từ API, có trạng thái tải/lỗi, Dashboard, danh sách và trang thông tin từng Lab. Những chức năng chưa có API (upload, chạy detector/chatbot, lưu lịch sử) được ghi rõ là chưa tích hợp; giao diện không tạo kết quả giả.
+Ứng dụng thực hành gồm FastAPI và React/Vite. Nhánh Diep tích hợp phần TV4:
+chatbot tài liệu Ollama, kiểm thử Prompt Injection, so sánh trước/sau,
+API Rate Limiting và nhật ký SQLite.
 
-## Yêu cầu
-
-- Windows 10/11, PowerShell
-- Python 3.10–3.12
-- Node.js 20.19+ hoặc 22.12+
-- npm đi kèm Node.js
-
-Không cần khóa API hay tài khoản dịch vụ trả phí để khởi động phần cốt lõi.
-
-## Cài đặt lần đầu
-
-Mở hai cửa sổ PowerShell tại thư mục dự án `ai_security_lab` (thư mục chứa `backend`, `frontend`, `docs`).
-
-### 1. Cài backend
-
-Trong cửa sổ thứ nhất:
-
-```powershell
-Set-Location .\backend
+## Khởi động
+Tại backend:
+~~~powershell
 py -3.10 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Nếu máy đã cài Python 3.11 hoặc 3.12 thay vì 3.10, thay `py -3.10` bằng `py -3.11` hoặc `py -3.12`. Có thể gọi Python trong virtual environment trực tiếp như trên, không cần thay đổi Execution Policy của PowerShell.
-
-### 2. Cài frontend
-
-Trong cửa sổ PowerShell thứ hai:
-
-```powershell
-Set-Location .\frontend
+.\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+~~~
+Tại frontend:
+~~~powershell
 npm ci
-```
-
-Nếu thư mục dự án không có `package-lock.json`, chạy `npm install` thay cho `npm ci`.
-
-## Chạy ứng dụng
-
-### Backend
-
-Từ cửa sổ backend, đang ở `backend`:
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-- API: <http://127.0.0.1:8000>
-- Tài liệu API Swagger: <http://127.0.0.1:8000/docs>
-- Kiểm tra danh sách Lab: <http://127.0.0.1:8000/api/labs>
-
-### Frontend
-
-Từ cửa sổ frontend, đang ở `frontend`:
-
-```powershell
 npm run dev
-```
+~~~
+Mở URL Vite in trong terminal. Giao diện chuyển tiếp /api đến backend cổng 8000.
+Swagger: http://127.0.0.1:8000/docs.
 
-Mở địa chỉ được in ra bởi Vite, thông thường <http://localhost:5173>. Frontend chuyển tiếp đường dẫn `/api` sang backend ở `http://127.0.0.1:8000`; hãy để cả hai cửa sổ đang chạy. Dừng từng dịch vụ bằng `Ctrl+C`.
+## Chạy phần AI Security
+1. Chạy Ollama trên Colab theo [notebook](docs/Ollama_Colab.ipynb), hoặc dùng Ollama local.
+2. Mở Prompt Injection, nhập URL tunnel Colab hoặc http://localhost:11434.
+3. Kiểm tra kết nối và chọn model đang có.
+4. So sánh trước/sau hoặc chạy bộ 14 ca test.
+5. Mở API Security để thử rate limiting.
+6. Tab Nhật ký & lịch sử cho phép xem và xuất kết quả.
 
-## Kiểm tra nhanh
+[Hướng dẫn TV4 và hai kịch bản demo](docs/TV4_AI_SECURITY_LAB.md)
+bao gồm cấu hình model, lỗi Colab, cách đánh giá và giới hạn.
 
-Với backend đang chạy, gọi API trực tiếp trong PowerShell:
+## Trạng thái chức năng
+- Dashboard và danh sách lab: API thật.
+- Prompt Injection và API Security: đã tích hợp thực thi.
+- Deepfake: trang giới thiệu, chưa có detector/upload thực thi.
+- Data Poisoning: lên kế hoạch.
+- SQLite lưu tại backend/storage/security.sqlite3, không commit dữ liệu chạy vào git.
+- Không có kết quả mô hình thật được điền sẵn; phải kết nối Ollama để thu bằng chứng.
+- Backend chạy localhost, chưa thiết kế cho truy cập công khai.
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/
-Invoke-RestMethod http://127.0.0.1:8000/api/labs
-```
-
-Sau đó mở frontend và kiểm tra:
-
-1. Dashboard tải được danh sách Lab từ backend.
-2. Nút tải lại gọi lại API; tắt backend rồi tải lại sẽ hiện trạng thái lỗi và nút thử kết nối lại.
-3. Mở danh sách Lab và từng trang thông tin; các chức năng chưa được backend hỗ trợ có nhãn “Chưa tích hợp”.
-4. Bật lại backend và dùng thử kết nối lại để xác nhận trạng thái phục hồi.
-5. Thu nhỏ cửa sổ trình duyệt để kiểm tra giao diện responsive và thao tác điều hướng.
-
-Lệnh kiểm tra frontend:
-
-```powershell
-Set-Location .\frontend
+## Kiểm tra
+~~~powershell
+# Tại backend
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+# Tại frontend
 npm run build
 npm run lint
-```
+~~~
+Các test backend gọi trực tiếp handler/service và giả lập đầu ra Ollama.
+Chúng kiểm tra logic bảo vệ, phản hồi rate limit, lưu dữ liệu và schema;
+không thay thế kiểm thử HTTP đầy đủ hoặc đánh giá mô hình thật.
 
-## Kịch bản demo gợi ý (3–5 phút)
+## TV4 experiments
 
-1. Giới thiệu mục tiêu: thực hành bảo mật trong sandbox, không nhắm vào hệ thống bên ngoài.
-2. Khởi động backend và frontend; mở Dashboard để chứng minh danh sách Lab đến từ API thật.
-3. Mở danh sách Lab và xem trang Deepfake, Prompt Injection, API Security; chỉ rõ chức năng nào đã có API và chức năng nào chưa.
-4. Dừng backend, nhấn tải lại để minh họa trạng thái lỗi; khởi động lại và thử kết nối lại.
-5. Kết thúc bằng checklist QA, giới hạn hiện tại và các API cần được nhóm backend/AI tích hợp tiếp.
-
-## Phạm vi hiện tại và phối hợp tích hợp
-
-Backend hiện cung cấp `GET /`, `GET /api/labs`. Vì vậy Dashboard, danh sách Lab, điều hướng, trạng thái kết nối và trang thông tin là chức năng chạy thật; upload video, detector deepfake, chatbot Ollama, rate limiting, request log và lịch sử phiên chưa thể chạy từ giao diện cho đến khi các endpoint tương ứng được cung cấp. Trạng thái `active` từ `/api/labs` chỉ có nghĩa Lab được backend khai báo, không khẳng định chức năng Lab đã hoàn thiện.
-
-Hợp đồng danh sách hiện dùng JSON:
-
-```json
-[
-  { "id": 1, "name": "Deepfake & Identity Spoofing", "status": "active" }
-]
-```
-
-Khi bổ sung API cho các Lab, thống nhất trước phương thức, đường dẫn, schema request/response, giới hạn upload, lỗi HTTP và định dạng bằng chứng với backend; sau đó kết nối giao diện theo hợp đồng đã kiểm thử.
+[Experiment, human judging, ASR and HTTP API measurements](docs/TV4_EXPERIMENTS.md).
