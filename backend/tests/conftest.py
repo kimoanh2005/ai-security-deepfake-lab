@@ -34,6 +34,8 @@ def settings(tmp_path: Path) -> Settings:
         db_path=str(tmp_path / "lab.db"),
         storage_dir=str(tmp_path / "storage"),
         login_rate_limit_per_minute=1000,
+        api_rate_limit_per_minute=100000,
+        heavy_rate_limit_per_minute=100000,
     )
 
 

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.9 (thêm `/media-assets`, mục 5.1; xem phụ lục) |
+| **Phiên bản** | 0.10 (giới hạn tần suất API điều khiển, trần hàng đợi; xem phụ lục) |
 | **Ngày** | 21/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
@@ -213,8 +213,9 @@ Phương thức không hỗ trợ trên một đường dẫn → `405` kèm `Al
 | 415 | `UNSUPPORTED_MEDIA` | Loại tệp không được hỗ trợ (xác định theo nội dung, không theo đuôi) |
 | 422 | `VALIDATION_ERROR` | Sai schema hoặc ngoài khoảng (`repeat > 5`, vượt trần số request/số lần gọi); lỗi từ `LabService.validate` cũng dùng mã này, `errors[].field` là tên trường trong thân. **Không** tạo experiment |
 | 422 | `MISSING_CONSENT` | Mẫu thiếu `consent_ref` |
-| 429 | `RATE_LIMITED` | Vượt giới hạn API điều khiển hoặc đăng nhập (kèm `Retry-After`) |
+| 429 | `RATE_LIMITED` | Vượt giới hạn API điều khiển hoặc đăng nhập (kèm `Retry-After`, `RateLimit-*`). API điều khiển đếm **theo người dùng**, cửa sổ trượt 60 giây: mọi request đã xác thực tới `labs`, `experiments`, `media-assets` dùng chung hạn mức `API_RATE_LIMIT_PER_MINUTE` (120); `POST /labs/{lab}/experiments` và `POST /media-assets` còn bị hạn mức riêng `HEAVY_RATE_LIMIT_PER_MINUTE` (10). Request thiếu/sai token nhận `401` và không bị tính. `/health`, `/auth/login` và `/sandbox/echo` có bộ đếm riêng |
 | 500 | `INTERNAL_ERROR` | Lỗi không lường; không lộ chi tiết nội bộ |
+| 503 | `QUEUE_FULL` | Hàng đợi job đã đầy (`MAX_QUEUED_JOBS`); kèm `Retry-After`. Không tạo experiment; kiểm tra **sau** validate nên dữ liệu sai vẫn nhận `422` |
 | 503 | `DEP_UNAVAILABLE` | Phụ thuộc cần thiết (Ollama, FFmpeg) chưa sẵn sàng khi tạo thử nghiệm, hoặc Lab chưa có service cài đặt (kèm `Retry-After` khi có thể thử lại) |
 
 Lỗi **bên trong một job** (Ollama chết giữa chừng, timeout, kết quả bị từ chối) **không** là lỗi HTTP: experiment vẫn truy vấn được bằng `200`, có `state:"failed"` và `error.code` (mục 6.1).
@@ -754,3 +755,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.7 | 20/11/2026 | T-10: thêm `GET /api/v1/health` (6.8): `ok`/`degraded`/`down`, mã lý do Ollama cố định, `503` chỉ khi DB hoặc worker hỏng |
 | 0.8 | 21/11/2026 | T-12: thêm `/sandbox/echo` (6.9): `X-Lab-Token`, `X-Lab-Rate-Limit: on\|off` theo từng request, `X-Lab-Run`, bộ đếm tách theo chế độ, `413` cho thân > 4096 byte |
 | 0.9 | 21/11/2026 | T-13: `/media-assets` (tạo multipart, danh sách, chi tiết + ETag, `content`, `DELETE`); `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA`, `MISSING_CONSENT` đã cài (5.1) |
+| 0.10 | 21/11/2026 | Giới hạn tần suất API điều khiển theo người dùng (`control`, `heavy`; 429 + `Retry-After` + `RateLimit-*`); trần hàng đợi `MAX_QUEUED_JOBS` → `503 QUEUE_FULL`. Giới hạn đã biết: bộ đếm trong bộ nhớ (1 tiến trình); thân `multipart` của `POST /media-assets` được nhận xong trước khi kiểm hạn mức |

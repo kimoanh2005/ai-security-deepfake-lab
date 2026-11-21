@@ -16,12 +16,13 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError
 from app.core.etag import etag_of as _etag, if_none_match as _matches
 from app.core.negotiation import negotiate
+from app.core.ratelimit import control_limit, heavy_limit
 from app.core.query import PageParams, collection, reject_unknown_query
 from app.deps import get_current_user, get_db, get_orchestrator
 from app.models import Experiment, ExperimentEvent, Lab, User
 from app.models import LabResult as LabResultRow
 
-router = APIRouter(tags=["experiments"])
+router = APIRouter(tags=["experiments"], dependencies=[Depends(control_limit)])
 
 RETRY_AFTER_SECONDS = "2"  # gợi ý poll (API-01 5.5)
 STATES = ("queued", "running", "done", "failed")
@@ -96,7 +97,7 @@ def _load(db: Session, exp_id: str) -> tuple[Experiment, str, LabResultRow | Non
 
 # ---- tạo ----
 
-@router.post("/labs/{code}/experiments", status_code=202, operation_id="create_experiment")
+@router.post("/labs/{code}/experiments", status_code=202, operation_id="create_experiment", dependencies=[Depends(heavy_limit)])
 def create_experiment(
     code: str,
     response: Response,

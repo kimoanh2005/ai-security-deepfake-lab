@@ -48,7 +48,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.orchestrator = orchestrator
     app.state.sandbox = SandboxState(settings.sandbox_max_requests, settings.sandbox_window_seconds)
     app.state.health = HealthChecker(settings, session_factory, orchestrator, app.version)
-    app.state.limiters = {"login": SlidingWindowLimiter(settings.login_rate_limit_per_minute, 60)}
+    app.state.limiters = {
+        "login": SlidingWindowLimiter(settings.login_rate_limit_per_minute, 60),
+        "control": SlidingWindowLimiter(settings.api_rate_limit_per_minute, 60),
+        "heavy": SlidingWindowLimiter(settings.heavy_rate_limit_per_minute, 60),
+    }
 
     app.add_middleware(
         CORSMiddleware,

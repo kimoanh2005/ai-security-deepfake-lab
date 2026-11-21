@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(min_length=16)  # bắt buộc, thiếu hoặc quá ngắn là báo lỗi ngay
     jwt_expire_minutes: int = Field(default=60, ge=1)
     login_rate_limit_per_minute: int = Field(default=10, ge=1)  # số lần thử đăng nhập/phút/IP
+    # Giới hạn tần suất API điều khiển (FR-SEC): đếm theo người dùng, cửa sổ trượt 60 giây, trong bộ nhớ (1 tiến trình).
+    api_rate_limit_per_minute: int = Field(default=120, ge=1)    # mọi request đã xác thực tới labs/experiments/media-assets
+    heavy_rate_limit_per_minute: int = Field(default=10, ge=1)   # thao tác tốn tài nguyên: tạo experiment, tải tệp lên
+    max_queued_jobs: int = Field(default=20, ge=1)               # trần số job đang chờ trong hàng đợi (không tính job đang chạy)
     db_path: str = "./storage/lab.db"
     storage_dir: str = "./storage"
     cors_origins: str = "http://localhost:5173"

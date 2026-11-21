@@ -13,11 +13,12 @@ from app.config import Settings
 from app.core import files
 from app.core.errors import AppError
 from app.core.etag import etag_of, if_none_match
+from app.core.ratelimit import control_limit, heavy_limit
 from app.core.query import PageParams, collection, reject_unknown_query
 from app.deps import get_current_user, get_db, get_settings_dep, require_admin
 from app.models import MediaAsset, User
 
-router = APIRouter(prefix="/media-assets", tags=["media-assets"])
+router = APIRouter(prefix="/media-assets", tags=["media-assets"], dependencies=[Depends(control_limit)])
 security_log = logging.getLogger("app.security")
 
 LABELS = ("original", "synthetic")
@@ -60,7 +61,7 @@ def _get(db: Session, media_id: str) -> MediaAsset:
     return m
 
 
-@router.post("", status_code=201, operation_id="create_media_asset")
+@router.post("", status_code=201, operation_id="create_media_asset", dependencies=[Depends(heavy_limit)])
 def create_media_asset(
     request: Request,
     response: Response,

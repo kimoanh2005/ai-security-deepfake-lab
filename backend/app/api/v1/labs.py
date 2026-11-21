@@ -9,13 +9,14 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
+from app.core.ratelimit import control_limit
 from app.core.query import PageParams, collection, reject_unknown_query
 from app.deps import get_current_user, get_db, require_admin
 from app.models import Lab, User
 from app.models.schemas.labs import LabPatch
 from app.services.catalog import LEGACY_IDS
 
-router = APIRouter(prefix="/labs", tags=["labs"])
+router = APIRouter(prefix="/labs", tags=["labs"], dependencies=[Depends(control_limit)])
 security_log = logging.getLogger("app.security")
 
 

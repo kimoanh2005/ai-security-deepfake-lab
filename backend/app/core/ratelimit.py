@@ -7,7 +7,7 @@ import time
 from collections import defaultdict, deque
 from typing import Callable
 
-from fastapi import Request, Response
+from fastapi import Depends, Request, Response
 
 from app.core.errors import AppError
 
@@ -72,3 +72,36 @@ def rate_limit(name: str):
         response.headers["RateLimit-Remaining"] = str(remaining)
 
     return dependency
+
+
+def user_rate_limit(name: str):
+    """Dependency cho API điều khiển: đếm theo người dùng đã xác thực (không theo IP, vì nhiều người có thể dùng chung IP).
+
+    Chạy sau `get_current_user` nên request thiếu/sai token vẫn nhận 401, không bị tính vào hạn mức của ai.
+    """
+    from app.deps import get_current_user  # tránh import vòng (deps -> security -> ...)
+    from app.models import User
+
+    def dependency(request: Request, response: Response, user: User = Depends(get_current_user)) -> None:
+        limiter: SlidingWindowLimiter = request.app.state.limiters[name]
+        ok, remaining, retry = limiter.hit(user.id)
+        if not ok:
+            raise AppError(
+                429,
+                "RATE_LIMITED",
+                "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
+                headers={
+                    "Retry-After": str(retry),
+                    "RateLimit-Limit": str(limiter.limit),
+                    "RateLimit-Remaining": "0",
+                    "RateLimit-Reset": str(retry),
+                },
+            )
+        response.headers["RateLimit-Limit"] = str(limiter.limit)
+        response.headers["RateLimit-Remaining"] = str(remaining)
+
+    return dependency
+
+
+control_limit = user_rate_limit("control")
+heavy_limit = user_rate_limit("heavy")

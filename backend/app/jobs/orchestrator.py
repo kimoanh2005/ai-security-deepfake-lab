@@ -73,6 +73,9 @@ def _json_safe(data: Any) -> Any:
     return json.loads(text)
 
 
+QUEUE_FULL_RETRY_AFTER = 10  # giây, gợi ý thử lại khi hàng đợi đầy
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -88,6 +91,7 @@ class Orchestrator:
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._busy = False
+        self._submit_lock = threading.Lock()  # bảo đảm kiểm trần hàng đợi + xếp hàng không bị chen ngang
 
     # ---- vòng đời của orchestrator ----
 
@@ -130,7 +134,7 @@ class Orchestrator:
 
     def submit(self, user_id: str, lab_code: str, payload: Any) -> Experiment:
         """Tạo experiment `queued` và xếp hàng. Lỗi → AppError (không tạo experiment):
-        404 NOT_FOUND (không có Lab), 409 LAB_DISABLED, 422 VALIDATION_ERROR (LabValidationError), 503 DEP_UNAVAILABLE."""
+        404 NOT_FOUND (không có Lab), 409 LAB_DISABLED, 422 VALIDATION_ERROR (LabValidationError), 503 DEP_UNAVAILABLE / QUEUE_FULL."""
         with self._sf() as db:
             lab = db.scalar(select(Lab).where(Lab.code == lab_code))
             if lab is None:
@@ -144,12 +148,16 @@ class Orchestrator:
                 config = service.validate(payload, self._settings)
             except LabValidationError as exc:
                 raise AppError(422, "VALIDATION_ERROR", "Dữ liệu gửi lên không hợp lệ.", errors=exc.errors) from exc
-            exp = Experiment(user_id=user_id, lab_id=lab.id, state="queued", input_data=config)
-            db.add(exp)
-            db.flush()
-            db.add(ExperimentEvent(experiment_id=exp.id, level="info", event_type="queued", message="Đã xếp hàng."))
-            db.commit()
-        self._queue.put(exp.id)
+            with self._submit_lock:
+                if self._queue.qsize() >= self._settings.max_queued_jobs:
+                    raise AppError(503, "QUEUE_FULL", "Hàng đợi đang đầy. Vui lòng thử lại sau.",
+                                   headers={"Retry-After": str(QUEUE_FULL_RETRY_AFTER)})
+                exp = Experiment(user_id=user_id, lab_id=lab.id, state="queued", input_data=config)
+                db.add(exp)
+                db.flush()
+                db.add(ExperimentEvent(experiment_id=exp.id, level="info", event_type="queued", message="Đã xếp hàng."))
+                db.commit()
+                self._queue.put(exp.id)
         return exp
 
     # ---- worker ----
