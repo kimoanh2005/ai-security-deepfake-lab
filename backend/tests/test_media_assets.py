@@ -165,7 +165,10 @@ def test_safe_storage_path_blocks_symlink_escape(tmp_path):
     outside.mkdir()
     storage = tmp_path / "storage"
     storage.mkdir()
-    (storage / "link").symlink_to(outside)
+    try:
+        (storage / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):  # Windows không có quyền tạo symlink (WinError 1314): bỏ qua, CI Linux vẫn chạy
+        pytest.skip("không tạo được symlink trên máy này")
     with pytest.raises(AppError):
         files.safe_storage_path(storage, "link")
     assert files.safe_storage_path(storage, "ok.mp4") == storage.resolve() / "ok.mp4"
