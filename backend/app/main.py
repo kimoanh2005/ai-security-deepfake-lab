@@ -20,7 +20,7 @@ logging.getLogger("app").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-EXPOSED_HEADERS = ["Location", "Retry-After", "ETag", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"]
+EXPOSED_HEADERS = ["Location", "Retry-After", "ETag", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "Idempotent-Replayed"]
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

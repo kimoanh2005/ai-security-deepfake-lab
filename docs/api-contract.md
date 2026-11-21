@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.10 (giới hạn tần suất API điều khiển, trần hàng đợi; xem phụ lục) |
-| **Ngày** | 21/11/2026 |
+| **Phiên bản** | 0.11 (`Idempotency-Key`; xem phụ lục) |
+| **Ngày** | 22/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
 | **Nguồn chuẩn khi mâu thuẫn** | Tài liệu này; sau đó là `/openapi.json` do FastAPI sinh ra từ mã |
@@ -21,7 +21,7 @@ Tài liệu mô tả **hợp đồng đích**. Không phải endpoint nào cũng
 |---|---|---|---|
 | Xác thực | `POST /auth/login`, `GET /users/me` | **Đã có** | T-05 |
 | Lab | `GET /labs`, `GET /labs/{lab}`, `PATCH /labs/{lab}` | **Đã có** (`links` hiện chỉ có `self`) | T-06 |
-| Chạy Lab | `POST /labs/{lab}/experiments` | **Đã có** (202 + `Location` + `Retry-After`) | T-08, T-09 |
+| Chạy Lab | `POST /labs/{lab}/experiments` | **Đã có** (202 + `Location` + `Retry-After`; hỗ trợ `Idempotency-Key`, mục 8) | T-08, T-09 |
 | Thử nghiệm | `GET /experiments`, `/{id}` (ETag/304), `/{id}/events`, `/{id}/report` | **Đã có** | T-09 |
 | Hệ thống | `GET /health` | **Đã có** (6.8) | T-10 |
 | Sandbox | `GET/POST /sandbox/echo` | **Đã có** (6.9) | T-12 |
@@ -36,7 +36,7 @@ Hành vi cụ thể của T-09 (ngoài những gì mục 3–8 đã nêu):
 - `links` của experiment hiện chỉ có `self`, `events`, `report`; `prompt_runs`/`artifacts` thêm khi endpoint tồn tại.
 - Thiếu hẳn thân yêu cầu ở `POST` → `400 MALFORMED_REQUEST` (thiếu một trường trong thân vẫn là `422`).
 - `result_kind` chỉ lọc được trên experiment đã `done` (kết quả bị guard từ chối không có nhãn).
-- **Chưa làm:** `Idempotency-Key` (mục 8, mức S), `DELETE`, `artifacts`, `prompt-runs`, `verification`.
+- **Chưa làm:** `DELETE`, `artifacts`, `prompt-runs`, `verification`.
 
 Đối chiếu với `/openapi.json` (19/11/2026): 5 endpoint đã có khớp tài liệu về đường dẫn, phương thức, mã thành công, `operation_id` (`login`, `get_current_user`, `list_labs`, `get_lab`, `update_lab`) và dạng lỗi. Hai chỗ lệch cần biết:
 
@@ -213,6 +213,7 @@ Phương thức không hỗ trợ trên một đường dẫn → `405` kèm `Al
 | 415 | `UNSUPPORTED_MEDIA` | Loại tệp không được hỗ trợ (xác định theo nội dung, không theo đuôi) |
 | 422 | `VALIDATION_ERROR` | Sai schema hoặc ngoài khoảng (`repeat > 5`, vượt trần số request/số lần gọi); lỗi từ `LabService.validate` cũng dùng mã này, `errors[].field` là tên trường trong thân. **Không** tạo experiment |
 | 422 | `MISSING_CONSENT` | Mẫu thiếu `consent_ref` |
+| 422 | `IDEMPOTENCY_KEY_REUSED` | `Idempotency-Key` còn hiệu lực nhưng đi với Lab hoặc thân yêu cầu khác (`errors[0].field = "Idempotency-Key"`). Khóa sai định dạng thì là `VALIDATION_ERROR` |
 | 429 | `RATE_LIMITED` | Vượt giới hạn API điều khiển hoặc đăng nhập (kèm `Retry-After`, `RateLimit-*`). API điều khiển đếm **theo người dùng**, cửa sổ trượt 60 giây: mọi request đã xác thực tới `labs`, `experiments`, `media-assets` dùng chung hạn mức `API_RATE_LIMIT_PER_MINUTE` (120); `POST /labs/{lab}/experiments` và `POST /media-assets` còn bị hạn mức riêng `HEAVY_RATE_LIMIT_PER_MINUTE` (10). Request thiếu/sai token nhận `401` và không bị tính. `/health`, `/auth/login` và `/sandbox/echo` có bộ đếm riêng |
 | 500 | `INTERNAL_ERROR` | Lỗi không lường; không lộ chi tiết nội bộ |
 | 503 | `QUEUE_FULL` | Hàng đợi job đã đầy (`MAX_QUEUED_JOBS`); kèm `Retry-After`. Không tạo experiment; kiểm tra **sau** validate nên dữ liệu sai vẫn nhận `422` |
@@ -621,7 +622,10 @@ Tham số không nhận ra → `422`. Mọi người dùng đã đăng nhập xe
 
 - **Polling có điều kiện:** `GET /experiments/{id}` trả `ETag`; client gửi `If-None-Match` để nhận `304` khi chưa đổi, giảm tải máy một worker.
 - **Hàng đợi:** chỉ một job `running` tại một thời điểm; các job khác ở `queued` theo thứ tự tạo. Khi khởi động lại máy chủ, job `running` thành `failed` (`INTERRUPTED`), job `queued` được xếp lại.
-- **Chống trùng (S):** `POST /labs/{lab}/experiments` chấp nhận header `Idempotency-Key`. Cùng khóa trong 10 phút trả lại **cùng** experiment thay vì tạo mới (tránh bấm đúp làm đầy hàng đợi). Cùng khóa nhưng thân khác → `422`.
+- **Chống trùng (S, đã có):** `POST /labs/{lab}/experiments` chấp nhận header `Idempotency-Key` (1–128 ký tự ASCII in được, không có khoảng trắng; sai định dạng → `422 VALIDATION_ERROR`). Khóa tính **theo người dùng**.
+  - Cùng khóa, cùng Lab và cùng thân (so sánh theo nội dung JSON, không phụ thuộc thứ tự trường) trong 10 phút → `202` với **cùng** experiment thay vì tạo mới, `Location` như cũ và thêm `Idempotent-Replayed: true`. Thân là **trạng thái hiện tại** của experiment (có thể đã `done`), không phải ảnh chụp lúc tạo. Lần phát lại không kiểm lại Lab đang tắt, `validate` hay `QUEUE_FULL`, và không tính vào hàng đợi (nhưng vẫn tính vào hạn mức tần suất).
+  - Cùng khóa nhưng khác Lab hoặc thân → `422 IDEMPOTENCY_KEY_REUSED`.
+  - Yêu cầu bị từ chối (`422`, `409`, `503`) **không** giữ khóa: gửi lại với dữ liệu đúng vẫn tạo được. Khóa hết hạn sau 10 phút (tính từ lúc tạo experiment) và dùng lại được. Xóa experiment sẽ xóa khóa.
 - **Cập nhật đồng thời (C):** `PATCH` có thể kèm `If-Match` với `ETag`; không khớp → `412 Precondition Failed`.
 - **Trạng thái cuối:** `done` và `failed` không đổi nữa; poll dừng ở đó.
 
@@ -633,6 +637,7 @@ Tham số không nhận ra → `422`. Mọi người dùng đã đăng nhập xe
 |---|---|
 | `Authorization: Bearer <jwt>` | Mọi endpoint trừ `/auth/login`, `/health` |
 | `Location` | `201`, `202` |
+| `Idempotent-Replayed: true` | `202` của `POST /labs/{lab}/experiments` khi trả lại experiment cũ theo `Idempotency-Key` |
 | `Retry-After` | `202` (gợi ý poll), `429`, `503` |
 | `ETag` / `If-None-Match` | `GET /experiments/{id}`, `GET /media-assets/{id}` |
 | `Allow` | `405` |
@@ -642,7 +647,7 @@ Tham số không nhận ra → `422`. Mọi người dùng đã đăng nhập xe
 | `Content-Disposition` | Tải `artifacts/{name}`, `media-assets/{id}/content` (tên an toàn) |
 | `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` | API điều khiển và `/sandbox/echo` |
 
-CORS: chỉ cho origin của frontend (`CORS_ORIGINS`), và **expose** `Location`, `Retry-After`, `ETag`, `RateLimit-*` để trình duyệt đọc được.
+CORS: chỉ cho origin của frontend (`CORS_ORIGINS`), và **expose** `Location`, `Retry-After`, `ETag`, `RateLimit-*`, `Idempotent-Replayed` để trình duyệt đọc được.
 
 ---
 
@@ -756,3 +761,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.8 | 21/11/2026 | T-12: thêm `/sandbox/echo` (6.9): `X-Lab-Token`, `X-Lab-Rate-Limit: on\|off` theo từng request, `X-Lab-Run`, bộ đếm tách theo chế độ, `413` cho thân > 4096 byte |
 | 0.9 | 21/11/2026 | T-13: `/media-assets` (tạo multipart, danh sách, chi tiết + ETag, `content`, `DELETE`); `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA`, `MISSING_CONSENT` đã cài (5.1) |
 | 0.10 | 21/11/2026 | Giới hạn tần suất API điều khiển theo người dùng (`control`, `heavy`; 429 + `Retry-After` + `RateLimit-*`); trần hàng đợi `MAX_QUEUED_JOBS` → `503 QUEUE_FULL`. Giới hạn đã biết: bộ đếm trong bộ nhớ (1 tiến trình); thân `multipart` của `POST /media-assets` được nhận xong trước khi kiểm hạn mức |
+| 0.11 | 22/11/2026 | `Idempotency-Key` cho `POST /labs/{lab}/experiments` (mục 8): phát lại trả cùng experiment + `Idempotent-Replayed`, khác Lab/thân → `422 IDEMPOTENCY_KEY_REUSED`; bảng `idempotency_keys` (migration 0003) |

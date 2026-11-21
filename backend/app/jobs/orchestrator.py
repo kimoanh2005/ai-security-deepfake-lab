@@ -25,11 +25,13 @@ và thread bị bỏ rơi (daemon) để hàng đợi không kẹt. Vì vậy se
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -39,7 +41,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 from app.core.errors import AppError
-from app.models import Experiment, ExperimentEvent, Lab, PromptCase, PromptRun
+from app.models import Experiment, ExperimentEvent, IdempotencyKey, Lab, PromptCase, PromptRun
 from app.models import LabResult as LabResultRow  # bảng lab_results; LabResult của service là dataclass khác
 from app.models.database import now_iso
 from app.services.base import (
@@ -74,6 +76,19 @@ def _json_safe(data: Any) -> Any:
 
 
 QUEUE_FULL_RETRY_AFTER = 10  # giây, gợi ý thử lại khi hàng đợi đầy
+IDEMPOTENCY_WINDOW_SECONDS = 600  # cùng Idempotency-Key trong 10 phút → cùng experiment (API-01 mục 8)
+
+
+def _fingerprint(lab_code: str, payload: Any) -> str:
+    """Dấu vân tay của yêu cầu (Lab + thân gốc) để phát hiện cùng khóa nhưng thân khác."""
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(f"{lab_code}\n{body}".encode("utf-8")).hexdigest()
+
+
+def _idempotency_cutoff() -> str:
+    """Mốc created_at cũ nhất còn hiệu lực (cùng định dạng now_iso nên so sánh chuỗi được)."""
+    t = datetime.now(timezone.utc) - timedelta(seconds=IDEMPOTENCY_WINDOW_SECONDS)
+    return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
 
 
 class Orchestrator:
@@ -132,10 +147,25 @@ class Orchestrator:
 
     # ---- nhận yêu cầu (gọi từ router, SPEC 5.3 bước 2–3) ----
 
-    def submit(self, user_id: str, lab_code: str, payload: Any) -> Experiment:
-        """Tạo experiment `queued` và xếp hàng. Lỗi → AppError (không tạo experiment):
-        404 NOT_FOUND (không có Lab), 409 LAB_DISABLED, 422 VALIDATION_ERROR (LabValidationError), 503 DEP_UNAVAILABLE / QUEUE_FULL."""
+    def submit(self, user_id: str, lab_code: str, payload: Any, idempotency_key: str | None = None) -> Experiment:
+        """Như `submit_idempotent` nhưng chỉ trả experiment."""
+        return self.submit_idempotent(user_id, lab_code, payload, idempotency_key)[0]
+
+    def submit_idempotent(
+        self, user_id: str, lab_code: str, payload: Any, idempotency_key: str | None = None
+    ) -> tuple[Experiment, bool]:
+        """Tạo experiment `queued` và xếp hàng; trả (experiment, replayed). Lỗi → AppError (không tạo experiment):
+        404 NOT_FOUND (không có Lab), 409 LAB_DISABLED, 422 VALIDATION_ERROR (LabValidationError),
+        422 IDEMPOTENCY_KEY_REUSED, 503 DEP_UNAVAILABLE / QUEUE_FULL.
+
+        Có `idempotency_key`: cùng (người dùng, khóa) trong 10 phút và cùng (Lab, thân) → trả lại experiment cũ
+        (replayed=True), không kiểm Lab/validate/hàng đợi lại; khác Lab hoặc thân → 422. Khóa hết hạn được thay mới."""
+        fingerprint = _fingerprint(lab_code, payload) if idempotency_key is not None else None
         with self._sf() as db:
+            if idempotency_key is not None:
+                found = self._replay(db, user_id, idempotency_key, fingerprint)
+                if found is not None:
+                    return found, True
             lab = db.scalar(select(Lab).where(Lab.code == lab_code))
             if lab is None:
                 raise AppError(404, "NOT_FOUND", "Không tìm thấy Lab.")
@@ -149,6 +179,10 @@ class Orchestrator:
             except LabValidationError as exc:
                 raise AppError(422, "VALIDATION_ERROR", "Dữ liệu gửi lên không hợp lệ.", errors=exc.errors) from exc
             with self._submit_lock:
+                if idempotency_key is not None:  # kiểm lại trong khóa: hai yêu cầu cùng khóa đến đồng thời
+                    found = self._replay(db, user_id, idempotency_key, fingerprint)
+                    if found is not None:
+                        return found, True
                 if self._queue.qsize() >= self._settings.max_queued_jobs:
                     raise AppError(503, "QUEUE_FULL", "Hàng đợi đang đầy. Vui lòng thử lại sau.",
                                    headers={"Retry-After": str(QUEUE_FULL_RETRY_AFTER)})
@@ -156,9 +190,27 @@ class Orchestrator:
                 db.add(exp)
                 db.flush()
                 db.add(ExperimentEvent(experiment_id=exp.id, level="info", event_type="queued", message="Đã xếp hàng."))
+                if idempotency_key is not None:
+                    db.add(IdempotencyKey(user_id=user_id, key=idempotency_key, fingerprint=fingerprint,
+                                          experiment_id=exp.id))
                 db.commit()
                 self._queue.put(exp.id)
-        return exp
+        return exp, False
+
+    @staticmethod
+    def _replay(db: Session, user_id: str, key: str, fingerprint: str) -> Experiment | None:
+        """Experiment của khóa còn hiệu lực; None nếu chưa có hoặc đã hết hạn (bản ghi cũ bị xóa để khóa dùng lại)."""
+        rec = db.scalar(select(IdempotencyKey).where(IdempotencyKey.user_id == user_id, IdempotencyKey.key == key))
+        if rec is None:
+            return None
+        if rec.created_at < _idempotency_cutoff():
+            db.delete(rec)
+            db.flush()
+            return None
+        if rec.fingerprint != fingerprint:
+            raise AppError(422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key đã được dùng cho một yêu cầu khác.",
+                           errors=[{"field": "Idempotency-Key", "message": "Cùng khóa phải đi với cùng Lab và cùng thân yêu cầu."}])
+        return db.get(Experiment, rec.experiment_id)
 
     # ---- worker ----
 

@@ -6,10 +6,11 @@ Mọi người dùng đã đăng nhập xem được thử nghiệm của cả n
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,7 @@ STATES = ("queued", "running", "done", "failed")
 RESULT_KINDS = ("real", "simulated", "planned")
 SORTS = {"created_at": Experiment.created_at, "-created_at": Experiment.created_at}
 REPORT_TYPES = ("text/markdown", "application/json")
+IDEMPOTENCY_KEY_RE = re.compile(r"^[\x21-\x7e]{1,128}$")  # ASCII in được, không khoảng trắng, tối đa 128 ký tự
 
 
 # ---- biểu diễn ----
@@ -102,14 +104,26 @@ def create_experiment(
     code: str,
     response: Response,
     payload: Any = Body(...),  # thân khác nhau theo Lab; LabService.validate quyết định (API-01 mục 5)
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     user: User = Depends(get_current_user),
     orchestrator=Depends(get_orchestrator),
     db: Session = Depends(get_db),
 ):
-    # submit(): 404 (Lab), 409 LAB_DISABLED (trước validate), 422 (validate), 503 (chưa có service)
-    exp = orchestrator.submit(user.id, code, payload)
+    key = None
+    if idempotency_key is not None:
+        key = idempotency_key.strip()
+        if not IDEMPOTENCY_KEY_RE.match(key):
+            raise AppError(422, "VALIDATION_ERROR", "Dữ liệu gửi lên không hợp lệ.",
+                           errors=[{"field": "Idempotency-Key", "message": "1–128 ký tự ASCII in được, không có khoảng trắng."}])
+    # submit(): 404 (Lab), 409 LAB_DISABLED (trước validate), 422 (validate / khóa dùng lại), 503 (chưa có service)
+    exp, replayed = orchestrator.submit_idempotent(user.id, code, payload, key)
     response.headers["Location"] = f"/api/v1/experiments/{exp.id}"
     response.headers["Retry-After"] = RETRY_AFTER_SECONDS
+    if replayed:
+        # Trả trạng thái hiện tại (có thể đã done) thay vì ảnh chụp lúc tạo.
+        exp, lab_code, result_row = _load(db, exp.id)
+        response.headers["Idempotent-Replayed"] = "true"
+        return experiment_out(exp, lab_code, result_row)
     return experiment_out(exp, code)
 
 

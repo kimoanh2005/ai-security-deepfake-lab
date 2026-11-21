@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.core.db import Base
@@ -181,4 +181,18 @@ class PromptRun(Base):
     model_name: Mapped[str | None] = mapped_column(String)
     task_violated: Mapped[int | None] = mapped_column(Integer)  # NULL = chưa chấm
     judged_by: Mapped[str | None] = mapped_column(String)  # rule / human
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=now_iso)
+
+
+class IdempotencyKey(Base):
+    """Khóa chống trùng của POST /labs/{lab}/experiments (API-01 mục 8). Phạm vi theo người dùng."""
+
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (UniqueConstraint("user_id", "key", name="uq_idempotency_keys_user_id_key"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id("idk"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)  # sha256 của (lab, thân yêu cầu)
+    experiment_id: Mapped[str] = mapped_column(ForeignKey("experiments.id", ondelete="CASCADE"), nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False, default=now_iso)
