@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.7 (thêm `GET /health`, mục 6.8; xem phụ lục) |
+| **Phiên bản** | 0.8 (thêm `/sandbox/echo`, mục 6.9; xem phụ lục) |
 | **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
@@ -24,7 +24,7 @@ Tài liệu mô tả **hợp đồng đích**. Không phải endpoint nào cũng
 | Chạy Lab | `POST /labs/{lab}/experiments` | **Đã có** (202 + `Location` + `Retry-After`) | T-08, T-09 |
 | Thử nghiệm | `GET /experiments`, `/{id}` (ETag/304), `/{id}/events`, `/{id}/report` | **Đã có** | T-09 |
 | Hệ thống | `GET /health` | **Đã có** (6.8) | T-10 |
-| Sandbox | `/sandbox/echo` | Chưa có | T-12 |
+| Sandbox | `GET/POST /sandbox/echo` | **Đã có** (6.9) | T-12 |
 | Media | `/media-assets` | Chưa có | T-13 |
 | Kịch bản/ca | `/labs/{lab}/scenarios`, `/labs/prompt_injection/cases` | Chưa có (cần TV4 cung cấp nội dung) | sau T-09 |
 | Khác | `artifacts`, `verification`, `prompt-runs`, `DELETE`, `models`, `users` | Chưa có (ưu tiên S/C) | sau MVP |
@@ -169,7 +169,7 @@ Quy ước đặt tên:
 
 | Phương thức & đường dẫn | Quyền | Ưu | Ghi chú |
 |---|---|---|---|
-| `GET /sandbox/echo` · `POST /sandbox/echo` | token Lab nội bộ | M | Đối tượng bị thử; trả `200` hoặc `429` kèm `Retry-After`. Không là tài nguyên nghiệp vụ nên không theo `/api/v1` |
+| `GET /sandbox/echo` · `POST /sandbox/echo` | token Lab nội bộ (`X-Lab-Token`) | M | Đối tượng bị thử; trả `200` hoặc `429` kèm `Retry-After`. Không là tài nguyên nghiệp vụ nên không theo `/api/v1`. Chi tiết ở 6.9 |
 
 ---
 
@@ -566,6 +566,28 @@ Công khai, không cần token, `Cache-Control: no-store`. Dùng để kiểm tr
 
 Quy tắc: Ollama được thăm dò bằng `GET {OLLAMA_URL}/api/tags` (timeout 2 s, không theo chuyển hướng) và kết quả được nhớ 30 s, nên Colab tắt không làm `/health` chậm hay lỗi. Phản hồi **không bao giờ** chứa địa chỉ đường hầm, token, đường dẫn tệp hay nội dung ngoại lệ. FFmpeg chỉ được tìm trong `PATH`.
 
+### 6.9. Sandbox (`/sandbox/echo`)
+
+Đối tượng bị thử của Lab API Security. **Không** dành cho frontend; chỉ Lab (worker) gọi tới `ctx.settings.sandbox_base_url` bằng `httpx`. Không dùng JWT.
+
+| Header | Bắt buộc | Ý nghĩa |
+|---|---|---|
+| `X-Lab-Token` | có | Token Lab nội bộ (`ctx.settings.sandbox_token`). Thiếu/sai → `401 UNAUTHENTICATED` (kiểm tra trước khi đọc thân) |
+| `X-Lab-Rate-Limit` | không | `on` (mặc định) hoặc `off`: bật/tắt giới hạn tần suất cho **riêng request này**. Giá trị khác → `422 VALIDATION_ERROR` (`errors[].field = "X-Lab-Rate-Limit"`) |
+| `X-Lab-Run` | không | Khóa chạy, 1–64 ký tự `[A-Za-z0-9_-]` (nên dùng id experiment), mặc định `default`. Mỗi khóa có bộ đếm riêng để các lần chạy không ảnh hưởng nhau. Sai → `422` |
+
+Bộ đếm tách theo chế độ: `on` dùng cửa sổ trượt `SANDBOX_MAX_REQUESTS`/`SANDBOX_WINDOW_SECONDS`; `off` chỉ đếm, không chặn. Bộ đếm này độc lập với giới hạn đăng nhập và API điều khiển.
+
+`GET /sandbox/echo` → `200`
+
+```json
+{ "ok": true, "mode": "on", "count": 1, "method": "GET", "received_bytes": 0 }
+```
+
+Kèm `RateLimit-Limit` và `RateLimit-Remaining` khi `on`. `POST` nhận thân tối đa 4096 byte (lớn hơn → `413 PAYLOAD_TOO_LARGE`) và trả thêm `received_bytes` và `keys` (tên khóa cấp trên, tối đa 20) nếu thân là JSON object; **không echo giá trị** và không bao giờ gọi ra ngoài hay dùng nội dung thân làm địa chỉ/đường dẫn.
+
+Vượt giới hạn khi `on` → `429` (`problem+json`, `code = RATE_LIMITED`) kèm `Retry-After`, `RateLimit-Limit`, `RateLimit-Remaining: 0`, `RateLimit-Reset`. Cùng một chuỗi request ở `off` luôn `200`, nên so sánh hai chế độ cho kết quả khác nhau.
+
 ---
 
 ## 7. Truy vấn danh sách
@@ -720,3 +742,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.5 | 19/11/2026 | T-09: nối router experiments (tạo, danh sách, chi tiết + ETag, events, report theo `Accept`); bổ sung hành vi cụ thể ở mục 0 (report `409` khi chưa kết thúc, thiếu thân → `400`) |
 | 0.6 | 20/11/2026 | `error.code = DEP_UNAVAILABLE` (event `dep_unavailable`) khi phụ thuộc ngoài mất kết nối giữa chừng (FR-PI-10); job `failed` vẫn có `result`/`result_kind` = `null` nhưng các lượt `prompt_runs` đã chạy được lưu; `error.message` là câu cố định (6.1) |
 | 0.7 | 20/11/2026 | T-10: thêm `GET /api/v1/health` (6.8): `ok`/`degraded`/`down`, mã lý do Ollama cố định, `503` chỉ khi DB hoặc worker hỏng |
+| 0.8 | 21/11/2026 | T-12: thêm `/sandbox/echo` (6.9): `X-Lab-Token`, `X-Lab-Rate-Limit: on\|off` theo từng request, `X-Lab-Run`, bộ đếm tách theo chế độ, `413` cho thân > 4096 byte |

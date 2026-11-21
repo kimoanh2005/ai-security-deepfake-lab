@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | INT-01 · Hướng dẫn viết service cho một Lab |
-| **Phiên bản** | 0.2 (20/11/2026) — theo SPEC-01 v0.6 mục 5, 6, 9 và mã `backend/app/services/`, `backend/app/jobs/orchestrator.py` |
+| **Phiên bản** | 0.3 (21/11/2026) — theo SPEC-01 v0.8 mục 5, 6, 9 và mã `backend/app/services/`, `backend/app/jobs/orchestrator.py` |
 | **Người phụ trách** | TV1 |
 | **Đọc kèm** | `docs/api-contract.md` (REST mà frontend gọi), `docs/spec/spec.md` (đặc tả) |
 
@@ -265,7 +265,7 @@ Chạy cả vòng đời qua orchestrator (hàng đợi, ghi DB): copy cách d�
 
 **TV4 — Prompt Injection.** Một experiment chạy cả hai nhánh `defenses` với cùng ca, cùng mô hình, cùng `repeat` (D-07). Gọi Ollama (trên Colab, D-18) **chỉ** tới `settings.ollama_url` kèm `Authorization: Bearer settings.ollama_api_key`: `https` bắt buộc, host thuộc `ollama_allowed_hosts`, `follow_redirects=False`, timeout `ollama_connect_timeout`/`ollama_read_timeout`, không đưa token vào log/event/kết quả, phản hồi mô hình là **dữ liệu không tin cậy** (không thực thi, không dùng làm URL/đường dẫn). Chỉ gửi văn bản tổng hợp trong `prompt_cases` (FR-PI-12). `metrics.model_name`, `metrics.endpoint_kind = "colab"`, và `limitations` nêu mô hình chạy trên dịch vụ ngoài (FR-PI-11). Thành phần `ollama_chat` có `kind="real"` **chỉ khi** có phản hồi thật. ASR chỉ tính khi mọi lượt trong nhánh đã được chấm; còn `None` thì ghi "chưa đủ dữ liệu". Liệt kê cả ca phòng thủ không hiệu quả (`metrics.failed_cases`). Colab ngắt giữa chừng (FR-PI-10): ném `LabRunError("DEP_UNAVAILABLE", ..., {"prompt_runs": rows_da_co})` (mục 6b) để experiment `failed` đúng mã mà không mất các lượt đã chạy; các lượt từng phần không được dùng để tính ASR.
 
-**TV4 — API Security.** Gửi **request HTTP thật** (`httpx`) tới `/sandbox/echo` trên `127.0.0.1` từ worker; đích cố định, không nhận URL (FR-API-04). Đo số gửi/200/429 và độ trễ p50/p95 (FR-API-03); mỗi `429` ghi `ctx.emit("warn", "rate_limited", …)`. Trần `MAX_API_LAB_REQUESTS`. `limitations` luôn nêu Rate Limiting đơn lẻ không chống được mọi dạng DoS/DDoS (FR-API-06). `/sandbox/echo` do TV1 dựng khung (T-12); tham số kịch bản (`window`, `max_requests`) do TV4 chọn.
+**TV4 — API Security.** Gửi **request HTTP thật** (`httpx`) tới `/sandbox/echo` trên `127.0.0.1` từ worker; đích cố định, không nhận URL (FR-API-04). Đo số gửi/200/429 và độ trễ p50/p95 (FR-API-03); mỗi `429` ghi `ctx.emit("warn", "rate_limited", …)`. Trần `MAX_API_LAB_REQUESTS`. `limitations` luôn nêu Rate Limiting đơn lẻ không chống được mọi dạng DoS/DDoS (FR-API-06). `/sandbox/echo` do TV1 dựng (T-12, API-01 mục 6.9): gọi `ctx.settings.sandbox_base_url + "/sandbox/echo"` với header `X-Lab-Token: ctx.settings.sandbox_token`, `X-Lab-Rate-Limit: on|off` (mỗi giá trị trong `rate_limit_modes` ứng với một nhánh), `X-Lab-Run: ctx.experiment_id` để mỗi lần chạy có bộ đếm riêng. Tham số kịch bản (`window`, `max_requests`) do TV4 chọn qua `SANDBOX_WINDOW_SECONDS`/`SANDBOX_MAX_REQUESTS` trong `.env`. `validate` phải từ chối (422) kịch bản có số request vượt `ctx.settings.max_api_lab_requests`; không ghi token vào `ctx.emit`, log hay `metrics`.
 
 ## 11. Thêm một Lab mới
 
@@ -291,3 +291,4 @@ Chạy cả vòng đời qua orchestrator (hàng đợi, ghi DB): copy cách d�
 |---|---|---|
 | 0.1 | 19/11/2026 | Bản đầu (T-11): hợp đồng `LabService`, luật G1–G7, `ctx.emit`/`ctx.check`, `records`, timeout, mẫu và checklist, việc riêng từng Lab |
 | 0.2 | 20/11/2026 | Thêm `LabRunError` (mục 6b): báo `DEP_UNAVAILABLE`/`JOB_TIMEOUT` và lưu `partial_records` khi phụ thuộc ngoài hỏng giữa chừng; sửa mục 3 và việc riêng TV4 |
+| 0.3 | 21/11/2026 | Hướng dẫn TV4 gọi `/sandbox/echo` (token, `X-Lab-Rate-Limit`, `X-Lab-Run`, trần `MAX_API_LAB_REQUESTS`) |

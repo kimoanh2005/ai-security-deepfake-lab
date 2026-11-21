@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,6 +23,12 @@ class Settings(BaseSettings):
     ollama_model: str = ""
     ollama_connect_timeout: float = 5.0
     ollama_read_timeout: float = 120.0
+    # Sandbox /sandbox/echo (T-12, FR-API-01): đối tượng bị thử của Lab API Security, tách khỏi /api/v1.
+    sandbox_token: str = ""              # token Lab nội bộ; để trống = tự sinh ngẫu nhiên mỗi lần khởi động (không ghi log)
+    sandbox_base_url: str = "http://127.0.0.1:8000"  # đích CỐ ĐỊNH Lab gọi tới; chỉ loopback (chống SSRF)
+    sandbox_window_seconds: int = Field(default=10, ge=1, le=3600)  # cửa sổ trượt khi bật rate limit
+    sandbox_max_requests: int = Field(default=20, ge=1, le=100000)  # số request/cửa sổ khi bật rate limit
+    max_api_lab_requests: int = Field(default=100, ge=1)  # trần số request mỗi lần chạy Lab API (FR-API-04); service phải kiểm
     # Trần cứng cho Lab (SPEC 10.5): giá trị khởi đầu, cần đo trên máy thật.
     max_frames: int = Field(default=24, ge=1)                 # số khung hình tối đa mỗi video (Deepfake)
     max_pi_calls: int = Field(default=60, ge=1)               # số lần gọi mô hình tối đa mỗi experiment (FR-PI-09)
@@ -41,6 +48,14 @@ class Settings(BaseSettings):
         if v.lower().startswith(("change", "your", "secret", "replace", "<")):
             raise ValueError("JWT_SECRET đang là giá trị mẫu; hãy đặt chuỗi ngẫu nhiên dài (vd: python -c \"import secrets;print(secrets.token_urlsafe(48))\")")
         return v
+
+    @field_validator("sandbox_base_url")
+    @classmethod
+    def _sandbox_must_be_loopback(cls, v: str) -> str:
+        parts = urlsplit(v.strip())
+        if parts.scheme not in ("http", "https") or parts.hostname not in ("127.0.0.1", "localhost", "::1") or parts.username or parts.password or parts.path not in ("", "/"):
+            raise ValueError("SANDBOX_BASE_URL chỉ được trỏ tới loopback (127.0.0.1/localhost), ví dụ http://127.0.0.1:8000")
+        return v.strip().rstrip("/")
 
     def job_timeout_for(self, lab_code: str) -> float:
         """Timeout (giây) của một job thuộc Lab `lab_code`; Lab chưa có biến riêng dùng giá trị mặc định."""

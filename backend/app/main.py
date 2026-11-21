@@ -1,15 +1,18 @@
 import logging
+import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import sandbox as sandbox_api
 from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.core.db import make_engine, make_session_factory
 from app.core.errors import install_error_handlers
 from app.core.health import HealthChecker
 from app.core.ratelimit import SlidingWindowLimiter
+from app.core.sandbox import SandboxState
 from app.jobs.orchestrator import Orchestrator
 
 logging.getLogger("app").setLevel(logging.INFO)
@@ -23,6 +26,8 @@ EXPOSED_HEADERS = ["Location", "Retry-After", "ETag", "RateLimit-Limit", "RateLi
 def create_app(settings: Settings | None = None) -> FastAPI:
     """App factory: test dựng được app với Settings và DB tạm; chạy thật dùng `app` ở cuối tệp."""
     settings = settings or get_settings()
+    if not settings.sandbox_token:
+        settings.sandbox_token = secrets.token_urlsafe(32)  # mỗi lần khởi động; Lab đọc từ ctx.settings, không ghi log
     engine = make_engine(settings.db_file)
 
     session_factory = make_session_factory(engine)
@@ -41,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.orchestrator = orchestrator
+    app.state.sandbox = SandboxState(settings.sandbox_max_requests, settings.sandbox_window_seconds)
     app.state.health = HealthChecker(settings, session_factory, orchestrator, app.version)
     app.state.limiters = {"login": SlidingWindowLimiter(settings.login_rate_limit_per_minute, 60)}
 
@@ -61,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     install_error_handlers(app)
     app.include_router(api_router)
+    app.include_router(sandbox_api.router)  # ngoài /api/v1: đối tượng bị thử, không phải tài nguyên nghiệp vụ
 
     @app.get("/")
     def root():

@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | **Tài liệu** | SPEC-01 · Đặc tả yêu cầu và kiến trúc backend (hợp đồng API chi tiết: API-01) |
-| **Phiên bản** | 0.7 (bản nháp để nhóm xác nhận; chốt ngữ nghĩa `GET /api/v1/health`, FR-OPS-01) |
+| **Phiên bản** | 0.8 (bản nháp để nhóm xác nhận; chốt `/sandbox/echo`, FR-API-01) |
 | **Ngày** | 19/11/2026 |
 | **Người phụ trách** | TV1 (Trưởng nhóm, kiến trúc & backend) |
 | **Căn cứ** | Bản đề xuất sản phẩm (SP); báo cáo "AI Security và Deepfake" (1.3.2, 3.2.1–3.2.3); thiết kế backend v0 (Phần B); quét repo ngày 15/11/2026 |
 | **Trạng thái** | Các mục đánh dấu **[ĐỀ XUẤT]** là quyết định mặc định của TV1, chưa được nhóm xác nhận. Các mục **[MỞ]** cần nhóm quyết. |
 
-Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.7*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
+Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.8*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
 
 ---
 
@@ -179,7 +179,7 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
 
 | ID | Yêu cầu | Ưu | Nguồn | AC |
 |---|---|---|---|---|
-| FR-API-01 | Endpoint đối tượng thử `/sandbox/echo` tách biệt API điều khiển, có bộ đếm riêng | M | SP A.4.3 | Rate limit sandbox không ảnh hưởng `/api/*` |
+| FR-API-01 | Endpoint đối tượng thử `GET/POST /sandbox/echo` tách biệt API điều khiển, có bộ đếm riêng. Chỉ nhận lời gọi mang token Lab nội bộ (`X-Lab-Token`). Bật/tắt rate limit **theo từng request** bằng header `X-Lab-Rate-Limit: on\|off` (mặc định `on`); bộ đếm tách theo chế độ và theo khóa chạy (`X-Lab-Run`); `window`/`max_requests` mặc định từ `.env` | M | SP A.4.3 | Rate limit sandbox không ảnh hưởng `/api/*`; cùng một chuỗi request cho kết quả khác nhau ở `on` và `off` |
 | FR-API-02 | `POST /labs/api_lab/experiments` nhận `scenario_code`, `rate_limit_modes` (mặc định `[false,true]`); gửi **request HTTP thật** tới `/sandbox/echo` | M | SP A.8 | Có mã 200/429 thật và độ trễ đo thật |
 | FR-API-03 | Ghi nhận: số gửi, số chấp nhận (200), số bị giới hạn (429), độ trễ p50/p95 | M | SP A.4.3 | — |
 | FR-API-04 | Trần cứng số request mỗi lần chạy (khởi đầu: 100) và thời gian tối đa; không nhận URL đích | M | SP A.4.3, A.11 | — |
@@ -370,7 +370,7 @@ Mỗi bảng thêm bằng migration riêng; không sửa tay tệp `.db`.
 
 ## 8. Hợp đồng API
 
-Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.7** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
+Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.8** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
 
 ### 8.1. Nguyên tắc
 
@@ -523,7 +523,10 @@ Loại bảo mật: `login_failed`, `file_rejected`, `rate_limited`, `lab_toggle
 | `OLLAMA_MODEL` | tên mô hình đã kéo trên Colab |
 | `OLLAMA_CONNECT_TIMEOUT`, `OLLAMA_READ_TIMEOUT` | 5 s / 120 s (khởi đầu, đo trên Colab thật) |
 | `MAX_UPLOAD_MB`, `MAX_VIDEO_SECONDS`, `MAX_FRAMES` | giá trị khởi đầu, **cần đo trên máy thật** |
-| `MAX_API_LAB_REQUESTS` | 100 (khởi đầu) |
+| `MAX_API_LAB_REQUESTS` | 100 (khởi đầu); `LabService.validate` của Lab API phải từ chối (422) kịch bản vượt trần |
+| `SANDBOX_TOKEN` | **bí mật**, token Lab nội bộ cho `/sandbox/echo`; để trống = tự sinh ngẫu nhiên mỗi lần khởi động (Lab đọc từ `ctx.settings.sandbox_token`) |
+| `SANDBOX_BASE_URL` | đích cố định mà Lab API gọi (`ctx.settings.sandbox_base_url`); chỉ loopback, mặc định `http://127.0.0.1:8000` |
+| `SANDBOX_WINDOW_SECONDS`, `SANDBOX_MAX_REQUESTS` | cửa sổ trượt (10 s) và số request/cửa sổ (20) khi bật rate limit; TV4 chỉnh theo kịch bản |
 | `MAX_PI_CALLS` | 60 (khởi đầu) |
 | `MAX_EVENTS_PER_EXPERIMENT` | 200 (khởi đầu); chặn một Lab lỗi vòng lặp làm phình CSDL |
 | `MAX_RESULT_BYTES` | 262144 (256 KiB); giới hạn G7 |
@@ -639,3 +642,4 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 | 0.5 | 19/11/2026 | Chốt hành vi orchestrator theo T-08: mã lỗi job (`JOB_TIMEOUT`, `RESULT_REJECTED`, `INTERRUPTED`, `INTERNAL_ERROR`) và cơ chế timeout/hủy (5.2); khởi động lại xếp lại job `queued` (FR-EXP-04); kết quả bị từ chối vẫn lưu `lab_results` với `guard_passed=0` và không ghi dòng nghiệp vụ (5.3); guard kiểm kiểu `prompt_runs` (6.1); thêm event `job_failed` (10.4); biến `JOB_TIMEOUT_*` (10.5) |
 | 0.6 | 20/11/2026 | Thêm `LabRunError` (FR-PI-10): service báo lỗi có mã (`DEP_UNAVAILABLE`, `JOB_TIMEOUT`) và lưu `partial_records` hợp lệ; mã lạ → `INTERNAL_ERROR`; `message` không trả client; không có `lab_results` cho job lỗi này; thêm event `dep_unavailable` (5.2, 9.1, 10.4); API-01 lên v0.6 |
 | 0.7 | 20/11/2026 | T-10: chốt `GET /api/v1/health` (FR-OPS-01): thành phần `database`, `worker`, `ffmpeg`, `ollama`; trạng thái tổng `ok`/`degraded`/`down`; `503` chỉ khi DB hoặc worker hỏng; Ollama cache 30 s, timeout 2 s, mã lý do cố định; API-01 lên v0.7 |
+| 0.8 | 21/11/2026 | T-12: chốt `/sandbox/echo` (FR-API-01): token Lab nội bộ, bật/tắt rate limit theo từng request (`X-Lab-Rate-Limit`), bộ đếm tách theo chế độ và khóa chạy, 429 + `Retry-After`; thêm `SANDBOX_*` (10.5); API-01 lên v0.8 |

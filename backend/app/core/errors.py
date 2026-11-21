@@ -21,6 +21,7 @@ _TITLES = {
     405: "Phương thức không được hỗ trợ",
     406: "Định dạng không được hỗ trợ",
     409: "Xung đột trạng thái",
+    413: "Thân yêu cầu quá lớn",
     422: "Dữ liệu không hợp lệ",
     429: "Quá nhiều yêu cầu",
     500: "Lỗi nội bộ",

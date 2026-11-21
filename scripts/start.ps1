@@ -6,7 +6,7 @@
   Needs backend\.venv and backend\.env (see README). Safe to re-run: migration and seed are idempotent.
   Binds to 127.0.0.1 by default (local only).
 .PARAMETER Port
-  Port for uvicorn (default 8000).
+  Port for uvicorn (default 8000). When given, also sets SANDBOX_BASE_URL to http://127.0.0.1:<Port> for this run.
 .PARAMETER BindHost
   Address to bind (default 127.0.0.1). Do not expose 0.0.0.0 unless you mean to.
 .PARAMETER NoSeed
@@ -52,6 +52,9 @@ Push-Location $backend
 try {
     Invoke-Step "alembic upgrade head" @("-m", "alembic", "upgrade", "head")
     if (-not $NoSeed) { Invoke-Step "seed (idempotent)" @("-m", "app.seed") }
+
+    # Lab API Security goi /sandbox/echo tren chinh server nay: giu SANDBOX_BASE_URL khop voi cong dang dung.
+    if ($PSBoundParameters.ContainsKey("Port")) { $env:SANDBOX_BASE_URL = "http://127.0.0.1:$Port" }
 
     $uv = @("-m", "uvicorn", "app.main:app", "--host", $BindHost, "--port", "$Port")
     if ($Reload) { $uv += "--reload" }
