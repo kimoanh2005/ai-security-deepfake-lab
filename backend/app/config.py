@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     sandbox_max_requests: int = Field(default=20, ge=1, le=100000)  # số request/cửa sổ khi bật rate limit
     max_api_lab_requests: int = Field(default=100, ge=1)  # trần số request mỗi lần chạy Lab API (FR-API-04); service phải kiểm
     # Trần cứng cho Lab (SPEC 10.5): giá trị khởi đầu, cần đo trên máy thật.
+    max_upload_mb: int = Field(default=50, ge=1)              # dung lượng tối đa một tệp tải lên (FR-DF-01)
+    max_video_seconds: float = Field(default=60.0, gt=0)      # độ dài tối đa video tải lên
+    ffprobe_timeout: float = Field(default=10.0, gt=0)        # giây; quá hạn coi như tệp không đọc được
     max_frames: int = Field(default=24, ge=1)                 # số khung hình tối đa mỗi video (Deepfake)
     max_pi_calls: int = Field(default=60, ge=1)               # số lần gọi mô hình tối đa mỗi experiment (FR-PI-09)
     max_events_per_experiment: int = Field(default=200, ge=1)  # chống một Lab lỗi vòng lặp làm phình CSDL

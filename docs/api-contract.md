@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.8 (thêm `/sandbox/echo`, mục 6.9; xem phụ lục) |
-| **Ngày** | 19/11/2026 |
+| **Phiên bản** | 0.9 (thêm `/media-assets`, mục 5.1; xem phụ lục) |
+| **Ngày** | 21/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
 | **Nguồn chuẩn khi mâu thuẫn** | Tài liệu này; sau đó là `/openapi.json` do FastAPI sinh ra từ mã |
@@ -25,7 +25,7 @@ Tài liệu mô tả **hợp đồng đích**. Không phải endpoint nào cũng
 | Thử nghiệm | `GET /experiments`, `/{id}` (ETag/304), `/{id}/events`, `/{id}/report` | **Đã có** | T-09 |
 | Hệ thống | `GET /health` | **Đã có** (6.8) | T-10 |
 | Sandbox | `GET/POST /sandbox/echo` | **Đã có** (6.9) | T-12 |
-| Media | `/media-assets` | Chưa có | T-13 |
+| Media | `POST/GET /media-assets`, `/{id}` (ETag/304), `/{id}/content`, `DELETE` (admin) | **Đã có** (5.1); mẫu `origin=sample` chưa được nạp (cần `datasets/demo/MANIFEST.csv`) | T-13 |
 | Kịch bản/ca | `/labs/{lab}/scenarios`, `/labs/prompt_injection/cases` | Chưa có (cần TV4 cung cấp nội dung) | sau T-09 |
 | Khác | `artifacts`, `verification`, `prompt-runs`, `DELETE`, `models`, `users` | Chưa có (ưu tiên S/C) | sau MVP |
 
@@ -269,6 +269,16 @@ Content-Type: application/json
   "created_at": "2026-11-16T03:00:00Z"
 }
 ```
+
+Hành vi đã cài (T-13):
+
+- Loại tệp xác định theo **nội dung** (magic bytes): MP4, MOV, WebM; đuôi và `Content-Type` do client gửi bị bỏ qua. Sai loại hoặc ffprobe không đọc được/không có luồng video → `415 UNSUPPORTED_MEDIA`.
+- Dung lượng tối đa `MAX_UPLOAD_MB` (mặc định 50) → `413 FILE_TOO_LARGE` (kiểm cả `Content-Length` khai báo lẫn khi đọc luồng). Độ dài tối đa `MAX_VIDEO_SECONDS` (mặc định 60) → `422 VALIDATION_ERROR`.
+- Thiếu hoặc rỗng `consent_ref` → `422 MISSING_CONSENT`; `label` phải là `original|synthetic`, `source` bắt buộc, văn bản tối đa 500 ký tự, thiếu `file` → `422 VALIDATION_ERROR`; không phải `multipart/form-data` → `400 MALFORMED_REQUEST`.
+- Tệp lưu trong `storage/` với tên ngẫu nhiên (tên client không dùng); `GET .../content` trả `Content-Disposition: attachment; filename="<id>.<đuôi>"`.
+- `GET /media-assets` lọc `origin`, `label`, phân trang; tham số lạ → `422`. Mọi người dùng đăng nhập xem được toàn bộ media.
+- `DELETE` chỉ admin; `origin=sample` → `409 STATE_CONFLICT`. Xóa asset không xóa kết quả thử nghiệm cũ; thử nghiệm đang xếp hàng dùng asset đó sẽ thất bại.
+- Giới hạn đã biết: Starlette nhận trọn phần multipart vào tệp tạm trước khi handler chạy, nên thân chunked không có `Content-Length` vẫn bị nhận hết trước khi bị từ chối `413`.
 
 Mẫu có sẵn (`origin:"sample"`) được nạp từ `datasets/demo/MANIFEST.csv` khi seed; người dùng thường không xóa được.
 
@@ -743,3 +753,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.6 | 20/11/2026 | `error.code = DEP_UNAVAILABLE` (event `dep_unavailable`) khi phụ thuộc ngoài mất kết nối giữa chừng (FR-PI-10); job `failed` vẫn có `result`/`result_kind` = `null` nhưng các lượt `prompt_runs` đã chạy được lưu; `error.message` là câu cố định (6.1) |
 | 0.7 | 20/11/2026 | T-10: thêm `GET /api/v1/health` (6.8): `ok`/`degraded`/`down`, mã lý do Ollama cố định, `503` chỉ khi DB hoặc worker hỏng |
 | 0.8 | 21/11/2026 | T-12: thêm `/sandbox/echo` (6.9): `X-Lab-Token`, `X-Lab-Rate-Limit: on\|off` theo từng request, `X-Lab-Run`, bộ đếm tách theo chế độ, `413` cho thân > 4096 byte |
+| 0.9 | 21/11/2026 | T-13: `/media-assets` (tạo multipart, danh sách, chi tiết + ETag, `content`, `DELETE`); `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA`, `MISSING_CONSENT` đã cài (5.1) |

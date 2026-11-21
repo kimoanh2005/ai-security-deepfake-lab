@@ -5,7 +5,6 @@ Mọi người dùng đã đăng nhập xem được thử nghiệm của cả n
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -15,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
+from app.core.etag import etag_of as _etag, if_none_match as _matches
 from app.core.negotiation import negotiate
 from app.core.query import PageParams, collection, reject_unknown_query
 from app.deps import get_current_user, get_db, get_orchestrator
@@ -92,21 +92,6 @@ def _load(db: Session, exp_id: str) -> tuple[Experiment, str, LabResultRow | Non
     lab_code = db.scalar(select(Lab.code).where(Lab.id == exp.lab_id))
     result_row = db.scalar(select(LabResultRow).where(LabResultRow.experiment_id == exp.id))
     return exp, lab_code, result_row
-
-
-def _etag(body: Any) -> str:
-    raw = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return '"' + hashlib.sha256(raw).hexdigest()[:32] + '"'
-
-
-def _matches(if_none_match: str | None, etag: str) -> bool:
-    """So khớp yếu (RFC 9110 13.1.2) với danh sách ETag hoặc `*`."""
-    if not if_none_match:
-        return False
-    if if_none_match.strip() == "*":
-        return True
-    strip = lambda t: t.strip().removeprefix("W/")  # noqa: E731
-    return any(strip(tag) == etag for tag in if_none_match.split(","))
 
 
 # ---- tạo ----
