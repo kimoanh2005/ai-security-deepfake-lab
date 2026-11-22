@@ -50,6 +50,26 @@ def mask_ip(ip: str) -> str:
     return ".".join(parts[:2]) + ".*.*" if len(parts) == 4 else "unknown"
 
 
+def _too_many_requests(limiter: SlidingWindowLimiter, retry_after: int) -> AppError:
+    return AppError(
+        429,
+        "RATE_LIMITED",
+        "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
+        headers={
+            "Retry-After": str(retry_after),
+            "RateLimit-Limit": str(limiter.limit),
+            "RateLimit-Remaining": "0",
+            "RateLimit-Reset": str(retry_after),
+        },
+    )
+
+
+def _mark_rate_limited(dependency):
+    """Đánh dấu dependency giới hạn tần suất để `core/openapi.py` tự ghi 429 vào tài liệu của endpoint dùng nó."""
+    dependency.rate_limited = True
+    return dependency
+
+
 def rate_limit(name: str):
     """Dependency: dùng limiter `name` trong app.state.limiters."""
 
@@ -57,21 +77,11 @@ def rate_limit(name: str):
         limiter: SlidingWindowLimiter = request.app.state.limiters[name]
         ok, remaining, retry = limiter.hit(client_ip(request))
         if not ok:
-            raise AppError(
-                429,
-                "RATE_LIMITED",
-                "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
-                headers={
-                    "Retry-After": str(retry),
-                    "RateLimit-Limit": str(limiter.limit),
-                    "RateLimit-Remaining": "0",
-                    "RateLimit-Reset": str(retry),
-                },
-            )
+            raise _too_many_requests(limiter, retry)
         response.headers["RateLimit-Limit"] = str(limiter.limit)
         response.headers["RateLimit-Remaining"] = str(remaining)
 
-    return dependency
+    return _mark_rate_limited(dependency)
 
 
 def user_rate_limit(name: str):
@@ -86,21 +96,11 @@ def user_rate_limit(name: str):
         limiter: SlidingWindowLimiter = request.app.state.limiters[name]
         ok, remaining, retry = limiter.hit(user.id)
         if not ok:
-            raise AppError(
-                429,
-                "RATE_LIMITED",
-                "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
-                headers={
-                    "Retry-After": str(retry),
-                    "RateLimit-Limit": str(limiter.limit),
-                    "RateLimit-Remaining": "0",
-                    "RateLimit-Reset": str(retry),
-                },
-            )
+            raise _too_many_requests(limiter, retry)
         response.headers["RateLimit-Limit"] = str(limiter.limit)
         response.headers["RateLimit-Remaining"] = str(remaining)
 
-    return dependency
+    return _mark_rate_limited(dependency)
 
 
 control_limit = user_rate_limit("control")

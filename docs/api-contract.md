@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.11 (`Idempotency-Key`; xem phụ lục) |
+| **Phiên bản** | 0.12 (lỗi `problem+json` trong OpenAPI; xem phụ lục) |
 | **Ngày** | 22/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
@@ -40,7 +40,7 @@ Hành vi cụ thể của T-09 (ngoài những gì mục 3–8 đã nêu):
 
 Đối chiếu với `/openapi.json` (19/11/2026): 5 endpoint đã có khớp tài liệu về đường dẫn, phương thức, mã thành công, `operation_id` (`login`, `get_current_user`, `list_labs`, `get_lab`, `update_lab`) và dạng lỗi. Hai chỗ lệch cần biết:
 
-1. OpenAPI do FastAPI sinh vẫn mô tả lỗi `422` bằng schema mặc định (`HTTPValidationError`). **Dạng thật** là `application/problem+json` (mục 4.3, ví dụ ở 6.7). Client dựa vào `code`, không dựa vào schema OpenAPI của lỗi.
+1. ~~OpenAPI mô tả lỗi `422` bằng `HTTPValidationError`~~ — **đã sửa ở v0.12**: `/openapi.json` mô tả mọi lỗi 4xx/5xx của `/api/v1` bằng `application/problem+json` (schema `ProblemDetails`, `FieldError`), kèm `code` trong mô tả từng mã. Lỗi suy ra tự động từ route (401/403/404/400/422/429/500; `WWW-Authenticate` và `Retry-After` được ghi ở header), lỗi riêng của endpoint (409, 413, 415, 503…) khai báo ở decorator. Endpoint mới được ghi lỗi chung mà không phải làm gì thêm; chỉ cần khai báo lỗi riêng bằng `problem_responses` (`app/core/openapi.py`). `/sandbox/*` nằm ngoài `/api/v1` nên không được ghi tự động.
 2. `links` của Lab ở 6.3 hiển thị cả `cases`; hiện mã chỉ trả `self`, vì chỉ liệt kê tài nguyên đã có thật. Thêm `scenarios`/`cases`/`experiments` khi endpoint tương ứng tồn tại.
 
 Cách chạy để xem trực tiếp: `alembic upgrade head`, `python -m app.seed`, `uvicorn app.main:app`, mở `http://127.0.0.1:8000/docs`, đăng nhập rồi bấm *Authorize* và dán `access_token` (không gõ `Bearer`). Backend dừng ngay lúc khởi động nếu CSDL chưa migrate.
@@ -762,3 +762,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.9 | 21/11/2026 | T-13: `/media-assets` (tạo multipart, danh sách, chi tiết + ETag, `content`, `DELETE`); `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA`, `MISSING_CONSENT` đã cài (5.1) |
 | 0.10 | 21/11/2026 | Giới hạn tần suất API điều khiển theo người dùng (`control`, `heavy`; 429 + `Retry-After` + `RateLimit-*`); trần hàng đợi `MAX_QUEUED_JOBS` → `503 QUEUE_FULL`. Giới hạn đã biết: bộ đếm trong bộ nhớ (1 tiến trình); thân `multipart` của `POST /media-assets` được nhận xong trước khi kiểm hạn mức |
 | 0.11 | 22/11/2026 | `Idempotency-Key` cho `POST /labs/{lab}/experiments` (mục 8): phát lại trả cùng experiment + `Idempotent-Replayed`, khác Lab/thân → `422 IDEMPOTENCY_KEY_REUSED`; bảng `idempotency_keys` (migration 0003) |
+| 0.12 | 22/11/2026 | OpenAPI: mọi lỗi 4xx/5xx của `/api/v1` mô tả bằng `application/problem+json` (`ProblemDetails`), bỏ `HTTPValidationError`; không đổi hành vi API |

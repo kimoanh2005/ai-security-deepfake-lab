@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError
 from app.core.etag import etag_of as _etag, if_none_match as _matches
 from app.core.negotiation import negotiate
+from app.core.openapi import problem_responses
 from app.core.ratelimit import control_limit, heavy_limit
 from app.core.query import PageParams, collection, reject_unknown_query
 from app.deps import get_current_user, get_db, get_orchestrator
@@ -99,7 +100,18 @@ def _load(db: Session, exp_id: str) -> tuple[Experiment, str, LabResultRow | Non
 
 # ---- tạo ----
 
-@router.post("/labs/{code}/experiments", status_code=202, operation_id="create_experiment", dependencies=[Depends(heavy_limit)])
+@router.post(
+    "/labs/{code}/experiments",
+    status_code=202,
+    operation_id="create_experiment",
+    dependencies=[Depends(heavy_limit)],
+    responses=problem_responses({
+        409: "LAB_DISABLED: Lab đang tắt (kiểm tra trước khi validate thân).",
+        422: "VALIDATION_ERROR: thân sai theo LabService, hoặc `Idempotency-Key` sai định dạng; "
+             "IDEMPOTENCY_KEY_REUSED: khóa còn hiệu lực nhưng đi với Lab/thân khác.",
+        503: "QUEUE_FULL: hàng đợi đầy (kèm `Retry-After`); DEP_UNAVAILABLE: Lab chưa có service hoặc phụ thuộc chưa sẵn sàng.",
+    }),
+)
 def create_experiment(
     code: str,
     response: Response,
@@ -291,7 +303,14 @@ def render_markdown(exp: dict[str, Any], events: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-@router.get("/experiments/{exp_id}/report", operation_id="get_experiment_report")
+@router.get(
+    "/experiments/{exp_id}/report",
+    operation_id="get_experiment_report",
+    responses=problem_responses({
+        406: "NOT_ACCEPTABLE: `Accept` không phải text/markdown hoặc application/json.",
+        409: "STATE_CONFLICT: thử nghiệm chưa kết thúc nên chưa có báo cáo.",
+    }),
+)
 def get_experiment_report(
     exp_id: str,
     request: Request,

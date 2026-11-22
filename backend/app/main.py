@@ -10,6 +10,7 @@ from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.core.db import make_engine, make_session_factory
 from app.core.errors import install_error_handlers
+from app.core.openapi import install_error_docs
 from app.core.health import HealthChecker
 from app.core.ratelimit import SlidingWindowLimiter
 from app.core.sandbox import SandboxState
@@ -70,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     install_error_handlers(app)
+    install_error_docs(app)
     app.include_router(api_router)
     app.include_router(sandbox_api.router)  # ngoài /api/v1: đối tượng bị thử, không phải tài nguyên nghiệp vụ
 

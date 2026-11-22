@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.core.errors import AppError
+from app.core.openapi import problem_responses
 from app.core.ratelimit import client_ip, mask_ip, rate_limit
 from app.core.security import create_access_token, verify_password
 from app.deps import WWW_AUTH, get_current_user, get_db, get_settings_dep
@@ -25,6 +26,9 @@ security_log = logging.getLogger("app.security")
     response_model=TokenResponse,
     operation_id="login",
     dependencies=[Depends(rate_limit("login"))],
+    responses=problem_responses({
+        401: "UNAUTHENTICATED: email hoặc mật khẩu không đúng, hoặc tài khoản bị khóa (không phân biệt để không lộ tài khoản).",
+    }),
 )
 def login(
     body: LoginRequest,

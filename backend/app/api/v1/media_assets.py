@@ -13,6 +13,7 @@ from app.config import Settings
 from app.core import files
 from app.core.errors import AppError
 from app.core.etag import etag_of, if_none_match
+from app.core.openapi import problem_responses
 from app.core.ratelimit import control_limit, heavy_limit
 from app.core.query import PageParams, collection, reject_unknown_query
 from app.deps import get_current_user, get_db, get_settings_dep, require_admin
@@ -61,7 +62,19 @@ def _get(db: Session, media_id: str) -> MediaAsset:
     return m
 
 
-@router.post("", status_code=201, operation_id="create_media_asset", dependencies=[Depends(heavy_limit)])
+@router.post(
+    "",
+    status_code=201,
+    operation_id="create_media_asset",
+    dependencies=[Depends(heavy_limit)],
+    responses=problem_responses({
+        400: "MALFORMED_REQUEST: không phải multipart/form-data hoặc tên tệp không hợp lệ.",
+        413: "FILE_TOO_LARGE: tệp vượt dung lượng tối đa.",
+        415: "UNSUPPORTED_MEDIA: không phải MP4/MOV/WebM hoặc không đọc được video (xác định theo nội dung, không theo đuôi).",
+        422: "MISSING_CONSENT: thiếu `consent_ref`; VALIDATION_ERROR: trường khác không hợp lệ, tệp rỗng hoặc video quá dài.",
+        503: "DEP_UNAVAILABLE: FFprobe chưa được cài trên máy chủ.",
+    }),
+)
 def create_media_asset(
     request: Request,
     response: Response,
@@ -177,7 +190,12 @@ def download_media_asset(media_id: str, db: Session = Depends(get_db), settings:
     return FileResponse(path, media_type=m.mime_type, filename=f"{m.id}{ext}", content_disposition_type="attachment")
 
 
-@router.delete("/{media_id}", status_code=204, operation_id="delete_media_asset")
+@router.delete(
+    "/{media_id}",
+    status_code=204,
+    operation_id="delete_media_asset",
+    responses=problem_responses({409: "STATE_CONFLICT: không xóa được mẫu có sẵn (`origin=sample`)."}),
+)
 def delete_media_asset(media_id: str, db: Session = Depends(get_db), settings: Settings = Depends(get_settings_dep),
                        admin: User = Depends(require_admin)):
     m = _get(db, media_id)
