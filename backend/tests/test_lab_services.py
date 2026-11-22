@@ -57,7 +57,8 @@ CASES = {
 }
 
 
-@pytest.mark.parametrize("code", sorted(CASES))
+# prompt_injection đã có service thật (TV4): xem tests/test_prompt_injection.py
+@pytest.mark.parametrize("code", sorted(set(CASES) - {"prompt_injection"}))
 def test_stub_result_passes_guard_and_is_simulated(settings, code):
     svc = get_service(code)
     data = svc.validate(CASES[code], settings)
@@ -145,7 +146,7 @@ def test_pi_rejects(settings, payload, field):
 
 def test_pi_call_cap(settings):
     svc = get_service("prompt_injection")
-    cases = [f"PI-{i:02d}" for i in range(7)]  # 7 ca * 2 nhánh * 5 = 70 > 60
+    cases = [f"PI-{i:02d}" for i in range(1, 8)]  # 7 ca * 2 nhánh * 5 = 70 > 60
     assert errors_of(svc, {"case_codes": cases, "repeat": 5}, settings) == {"repeat"}
     assert svc.validate({"case_codes": cases[:6], "repeat": 5}, settings)  # đúng 60 lượt
 

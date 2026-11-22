@@ -82,3 +82,44 @@ def probe_ollama(settings: Settings, transport: httpx.BaseTransport | None = Non
         if wanted not in names and f"{wanted}:latest" not in names:
             return {"status": "down", "reason": REASON_MODEL_MISSING}
     return {"status": "up"}
+
+
+MAX_GENERATE_BYTES = 262_144  # phản hồi sinh văn bản từ Colab là dữ liệu không tin cậy; không đọc quá 256 KiB
+
+
+def make_generate(settings: Settings, transport: httpx.BaseTransport | None = None, client: httpx.Client | None = None):
+    """Trả hàm `generate(prompt, system) -> {"success", "response"}` gọi `POST {OLLAMA_URL}/api/generate` (D-18).
+
+    Cùng kiểu trả về với `ollama_service.generate` của TV4 nhưng: địa chỉ chỉ lấy từ cấu hình đã qua
+    `validate_ollama_url`, có token Bearer, không theo chuyển hướng, timeout từ cấu hình, và lỗi chỉ trả mã cố định
+    (không bao giờ có địa chỉ/token/nội dung ngoại lệ). Dùng chung một `httpx.Client` cho cả lần chạy.
+    """
+    url = (settings.ollama_url or "").strip()
+    reason = REASON_NOT_CONFIGURED if not url else validate_ollama_url(url, allowed_hosts(settings))
+    model = (settings.ollama_model or "").strip() or "security-bot"
+    headers = {"Accept": "application/json"}
+    if settings.ollama_api_key:
+        headers["Authorization"] = f"Bearer {settings.ollama_api_key}"
+    timeout = httpx.Timeout(settings.ollama_read_timeout, connect=settings.ollama_connect_timeout)
+    http = client or httpx.Client(timeout=timeout, follow_redirects=False, transport=transport, trust_env=False)
+
+    def generate(prompt: str, system: str) -> dict[str, Any]:
+        if reason is not None:
+            return {"success": False, "error": reason}
+        body = {"model": model, "prompt": prompt, "system": system, "stream": False,
+                "options": {"temperature": 0, "seed": 42, "num_predict": 512}}
+        try:
+            resp = http.post(url.rstrip("/") + "/api/generate", json=body, headers=headers)
+            if resp.status_code in (401, 403):
+                return {"success": False, "error": REASON_UNAUTHORIZED}
+            if resp.status_code != 200 or len(resp.content) > MAX_GENERATE_BYTES:
+                return {"success": False, "error": REASON_BAD_RESPONSE}
+            data = resp.json()
+        except Exception:  # noqa: BLE001 - không đưa nội dung ngoại lệ mạng ra ngoài
+            return {"success": False, "error": REASON_UNREACHABLE}
+        if not isinstance(data, dict) or not isinstance(data.get("response"), str):
+            return {"success": False, "error": REASON_BAD_RESPONSE}
+        return {"success": True, "response": data["response"]}
+
+    generate.close = http.close  # type: ignore[attr-defined]
+    return generate

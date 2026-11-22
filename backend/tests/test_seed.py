@@ -25,7 +25,7 @@ def test_seed_creates_and_is_idempotent(app):
     run_seed(app.state.engine, ENV, out=out2.append, rounds=4)
     with app.state.session_factory() as db:
         assert db.query(Lab).count() == 4 and db.query(User).count() == 2
-    assert "Lab thêm mới: 0" in out2 and all("Đã có" in line for line in out2[1:])
+    assert "Lab thêm mới: 0" in out2 and "Ca Prompt Injection thêm mới: 0" in out2 and all("Đã có" in line for line in out2[2:])
 
 
 def test_seed_does_not_override_admin_changes(app):
