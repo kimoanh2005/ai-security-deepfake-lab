@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | **Tài liệu** | SPEC-01 · Đặc tả yêu cầu và kiến trúc backend (hợp đồng API chi tiết: API-01) |
-| **Phiên bản** | 0.8 (bản nháp để nhóm xác nhận; chốt `/sandbox/echo`, FR-API-01) |
-| **Ngày** | 19/11/2026 |
+| **Phiên bản** | 0.9 (bản nháp để nhóm xác nhận; đồng bộ với mã: upload an toàn, giới hạn tần suất, trần hàng đợi, `Idempotency-Key`, lỗi `problem+json` trong OpenAPI) |
+| **Ngày** | 22/11/2026 |
 | **Người phụ trách** | TV1 (Trưởng nhóm, kiến trúc & backend) |
 | **Căn cứ** | Bản đề xuất sản phẩm (SP); báo cáo "AI Security và Deepfake" (1.3.2, 3.2.1–3.2.3); thiết kế backend v0 (Phần B); quét repo ngày 15/11/2026 |
 | **Trạng thái** | Các mục đánh dấu **[ĐỀ XUẤT]** là quyết định mặc định của TV1, chưa được nhóm xác nhận. Các mục **[MỞ]** cần nhóm quyết. |
 
-Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.8*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
+Quy ước tham chiếu: `API-01` = tài liệu *Hợp đồng REST API v0.12*; mọi đường dẫn dưới đây tính từ tiền tố `/api/v1`. `SP A.x` = mục x của bản đề xuất sản phẩm. Mức ưu tiên: **M** (Must, bắt buộc cho MVP), **S** (Should), **C** (Could).
 
 ---
 
@@ -77,6 +77,11 @@ Các câu hỏi mở ở phần phân tích hướng đi trước đó được 
 | D-16 | **Mọi danh sách là `{items,page,page_size,total}`** | Mở rộng không phá hợp đồng | Mảng trần: mỗi lần thêm phân trang là thay đổi phá vỡ |
 | D-17 | **Định danh Lab trong đường dẫn là `code`**, giữ `id` số tạm thời | Dễ đọc, ổn định, tương thích giao diện hiện tại | Dùng `id` số: khó đọc |
 | D-18 | **Ollama chạy trên Google Colab (GPU), không chạy trên máy cục bộ.** Backend gọi qua đường hầm HTTPS tới **một** địa chỉ cố định trong `.env` (`OLLAMA_URL`) kèm token (`OLLAMA_API_KEY`); địa chỉ chỉ được kiểm tra theo danh sách cho phép (`OLLAMA_ALLOWED_HOSTS`); client không bao giờ cung cấp địa chỉ | Máy demo của nhóm không có GPU/đủ RAM cho mô hình; TV4 đã chọn Colab | Quay lại cục bộ: chỉ đổi `.env`, không đổi mã. Dùng API LLM trả phí: đổi client và nguyên tắc dữ liệu rời khỏi máy |
+| D-19 | Danh từ cho CRUD, **động từ cho hành động không phải CRUD**: `POST /auth/login` (200), sau này `POST /experiments/{id}/cancel` | Đăng nhập không tạo tài nguyên nên không hợp với `201 + Location` | `POST /auth/tokens` (201): thuần danh từ nhưng gượng với client |
+| D-20 | Chưa có refresh token ở MVP; chỉ access token `JWT_EXPIRE_MINUTES` | Refresh cần thêm bảng, `/auth/refresh`, `/auth/logout`; chưa cần cho demo một máy | Muốn phiên dài: tăng `JWT_EXPIRE_MINUTES` hoặc làm refresh ở bản sau |
+| D-21 | **Giới hạn tần suất API điều khiển theo người dùng** (không theo IP), cửa sổ trượt 60 s, **bộ đếm trong bộ nhớ** (một tiến trình): `control` 120/phút cho `labs`, `experiments`, `media-assets`; `heavy` 10/phút cho `POST /labs/{lab}/experiments` và `POST /media-assets`. Đăng nhập đếm theo IP. Request thiếu/sai token nhận `401` và **không** bị tính | Nhiều người dùng chung một IP khi demo; thao tác tốn tài nguyên cần hạn mức chặt hơn; không thêm Redis (D-04) | Nhiều tiến trình/máy: cần kho đếm dùng chung (bộ đếm hiện mất khi khởi động lại và không chia sẻ giữa tiến trình) |
+| D-22 | **Trần hàng đợi** `MAX_QUEUED_JOBS` (20, không tính job đang chạy); đầy → `503 QUEUE_FULL` + `Retry-After`, **kiểm sau validate** (dữ liệu sai vẫn nhận `422`) và trong cùng khóa với việc xếp hàng | Chống một người làm đầy hàng đợi của worker đơn; kiểm trong khóa để không bị chen ngang | Bỏ trần: hàng đợi tăng không giới hạn khi worker chậm |
+| D-23 | **`Idempotency-Key` lưu trong CSDL** (bảng `idempotency_keys`, migration `0003`), phạm vi theo người dùng, hiệu lực 10 phút kể từ lúc tạo experiment; cùng khóa + cùng Lab + cùng thân → trả lại experiment cũ; khác Lab/thân → `422 IDEMPOTENCY_KEY_REUSED`; yêu cầu bị từ chối không giữ khóa | Chống bấm đúp làm đầy hàng đợi (D-22) và tồn tại qua khởi động lại; so sánh theo vân tay SHA-256 của (Lab, thân) | Lưu trong bộ nhớ: gọn hơn nhưng mất khi khởi động lại |
 
 ---
 
@@ -144,13 +149,15 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
 | FR-EXP-07 | `GET /experiments` hỗ trợ lọc `lab`, `result_kind`, `state`, `created_by`, khoảng thời gian, sắp xếp, phân trang | M | SP A.8 | Lọc đúng; mặc định mới nhất trước |
 | FR-EXP-08 | Mỗi experiment lưu `config` (đã làm sạch), thời điểm, thời lượng, người chạy | M | SP A.4.5 | Đủ để tái hiện điều kiện |
 | FR-EXP-09 | Nhật ký sự kiện theo experiment (`experiment_events`) không chứa dữ liệu nhạy cảm | M | SP A.11 | Xem 10.3 |
+| FR-EXP-10 | `POST /labs/{lab}/experiments` chấp nhận `Idempotency-Key` (1–128 ký tự ASCII in được): cùng khóa, cùng Lab và cùng thân trong 10 phút → `202` với **cùng** experiment (trạng thái hiện tại) + `Idempotent-Replayed: true`, không kiểm lại `LAB_DISABLED`/`validate`/`QUEUE_FULL`; khác Lab hoặc thân → `422 IDEMPOTENCY_KEY_REUSED`; khóa sai định dạng → `422 VALIDATION_ERROR`; khóa tính theo người dùng | S | D-23 | Gửi hai lần cùng khóa → một experiment; yêu cầu bị từ chối không giữ khóa; khóa quá 10 phút dùng lại được |
+| FR-EXP-11 | Hàng đợi có trần `MAX_QUEUED_JOBS`; đầy → `503 QUEUE_FULL` + `Retry-After`, không tạo experiment | M | D-22 | Dữ liệu sai vẫn `422`; đầy thì `503` |
 
 ### 4.4. Lab 01 — Deepfake (DF)
 
 | ID | Yêu cầu | Ưu | Nguồn | AC |
 |---|---|---|---|---|
-| FR-DF-01 | `POST /media-assets` (multipart, `201` + `Location`): nhận video, kiểm tra loại bằng nội dung (magic bytes), dung lượng, thời lượng; lưu tên ngẫu nhiên trong `storage/` | M | SP A.5.1, A.8 | Tệp đổi đuôi, quá lớn, tên chứa `../` đều bị từ chối |
-| FR-DF-02 | Mẫu có sẵn nạp từ `datasets/demo/MANIFEST.csv` (nhãn `original`/`synthetic`, nguồn, `consent_ref`, kỹ thuật). Mẫu thiếu `consent_ref` bị từ chối | M | SP A.4.1, A.11 | — |
+| FR-DF-01 | `POST /media-assets` (multipart, `201` + `Location`): nhận video, kiểm tra loại bằng nội dung (magic bytes MP4/MOV/WebM), dung lượng (đọc theo luồng, `MAX_UPLOAD_MB`), thời lượng (`ffprobe` có timeout, `MAX_VIDEO_SECONDS`); lưu tên ngẫu nhiên trong `storage/`; thiếu `consent_ref` → `422 MISSING_CONSENT` | M | SP A.5.1, A.8 | Tệp đổi đuôi, quá lớn, tên chứa `../` đều bị từ chối |
+| FR-DF-02 | Mẫu có sẵn nạp từ `datasets/demo/MANIFEST.csv` (nhãn `original`/`synthetic`, nguồn, `consent_ref`, kỹ thuật). Mẫu thiếu `consent_ref` bị từ chối (đã cài cho tải lên; **việc nạp mẫu từ `MANIFEST.csv` chưa cài**, chờ TV2/TV3) | M | SP A.4.1, A.11 | — |
 | FR-DF-03 | `POST /labs/deepfake/experiments` nhận `asset_id`, tạo experiment; job: lấy siêu dữ liệu (thời lượng, codec, fps, độ phân giải), trích tối đa N khung hình, tách âm thanh nếu có | M | SP A.4.1 | Khung hình và `metadata.json` nằm đúng cấu trúc 9.3 |
 | FR-DF-04 | Nếu **chưa có detector được phê duyệt**: kết quả ghi rõ `detector: not_integrated`, `verdict` không có, và `limitations` nêu "chưa có phát hiện tự động" | M | SP A.4.1 bước 4, A.7 | Không xuất hiện điểm số hay nhãn "giả/thật" |
 | FR-DF-05 | Nếu có detector: trả `suspicion_score` và `verdict ∈ {suspected, not_detected, insufficient_data}`; ngưỡng do TV3 đặt trước và lưu cùng kết quả | S | SP A.9.1 | Không dùng khóa `probability`/`accuracy` |
@@ -203,6 +210,8 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
 | FR-OPS-02 | Sự kiện bảo mật (`login_failed`, `file_rejected`, `lab_toggled`) ghi ra log ứng dụng, có thời gian, mức, loại; không chứa mật khẩu/token | S | SP A.5, D-09 | Grep log thấy sự kiện, không thấy bí mật |
 | FR-OPS-03 | `scripts/start.ps1` kiểm tra điều kiện, tạo venv, chạy migration, seed, khởi động | M | SP A.8 | Máy Windows sạch chạy được bằng một lệnh |
 | FR-OPS-04 | Cấu hình qua `.env`; có `.env.example`; không commit bí mật | M | SP A.8 | — |
+| FR-OPS-05 | Giới hạn tần suất API điều khiển theo người dùng (D-21): vượt hạn mức → `429 RATE_LIMITED` + `Retry-After` + `RateLimit-Limit/Remaining/Reset`; `/health`, `/auth/login` (theo IP) và `/sandbox/echo` có bộ đếm riêng | M | SP A.11, D-21 | Vượt `control`/`heavy` → 429; người dùng khác không bị ảnh hưởng; `401` không bị tính |
+| FR-OPS-06 | `/openapi.json` mô tả mọi lỗi 4xx/5xx của `/api/v1` bằng `application/problem+json` (schema `ProblemDetails`), không còn `HTTPValidationError`; lỗi chung suy ra từ route, lỗi riêng khai báo bằng `problem_responses` | S | API-01 4.3 | Test duyệt toàn bộ route; mã lỗi thật phải có trong tài liệu của endpoint |
 
 ---
 
@@ -265,9 +274,9 @@ Cơ chế timeout: worker chạy `service.run` trong một thread con. Hết gi�
 
 ### 5.3. Trình tự xử lý một yêu cầu chạy Lab
 
-1. **Cổng 1:** xác thực token → kiểm tra vai trò → rate limit API điều khiển → validate body (Pydantic) → kiểm tra Lab `enabled`.
-2. `service.validate(payload, settings)` → trả payload đã chuẩn hóa hoặc ném `LabValidationError` (→ 422, không tạo experiment).
-3. Orchestrator tạo experiment `queued` (+ event `queued`), đẩy job, trả `202`.
+1. **Cổng 1:** xác thực token → kiểm tra vai trò → giới hạn tần suất theo người dùng (`control`, thêm `heavy` cho thao tác tạo) → validate body (Pydantic) → nếu có `Idempotency-Key` còn hiệu lực: trả lại experiment cũ và **dừng** (hoặc `422 IDEMPOTENCY_KEY_REUSED`) → kiểm tra Lab `enabled`.
+2. `service.validate(payload, settings)` → trả payload đã chuẩn hóa hoặc ném `LabValidationError` (→ 422, không tạo experiment). Sau đó, **trong khóa**, kiểm lại khóa idempotency (hai yêu cầu cùng khóa đến đồng thời) và kiểm trần hàng đợi (`503 QUEUE_FULL`).
+3. Orchestrator tạo experiment `queued` (+ event `queued`) và bản ghi `idempotency_keys` (nếu có khóa) trong **một giao dịch**, đẩy job, trả `202`.
 4. Worker: `running` → gọi `service.run(ctx, payload)` trong timeout.
 5. **Cổng 3 (result_guard):** kiểm tra `LabResult` (6.1). Đạt → orchestrator ghi `lab_results` + `records` (đổi `case_code` → `case_id`) + `experiment_events` + chuyển `done` trong **một giao dịch**. Không đạt (kể cả `case_code` không có trong `prompt_cases`) → `failed` + `result_rejected`, **không ghi dòng nghiệp vụ nào**; `lab_results` giữ một dòng `guard_passed=0` (`result_kind=planned` để thỏa ràng buộc cột, không lưu nội dung bị từ chối) kèm `guard_details`.
 6. Frontend poll `Location` (`GET /experiments/{id}`, có `ETag`) đến khi `done`/`failed`.
@@ -336,7 +345,7 @@ Một kết quả gồm nhiều thành phần, mỗi thành phần có nhãn ri�
 
 ## 7. Mô hình dữ liệu MVP
 
-Sơ đồ ER đã chốt: `docs/spec/diagrams/07-er.png` (8 bảng); SQL nằm ở các migration `0001`–`0002` (nguồn chuẩn). Dưới đây là phạm vi **MVP** và các quyết định đã chốt trong SPEC này.
+Sơ đồ ER đã chốt: `docs/spec/diagrams/07-er.png` (8 bảng; **chưa có `idempotency_keys`**, cần vẽ lại); SQL nằm ở các migration `0001`–`0003` (nguồn chuẩn). Dưới đây là phạm vi **MVP** và các quyết định đã chốt trong SPEC này.
 
 ### 7.1. Bảng lõi (tuần 1–2)
 
@@ -347,6 +356,7 @@ Sơ đồ ER đã chốt: `docs/spec/diagrams/07-er.png` (8 bảng); SQL nằm �
 | `experiments` | Mỗi lần chạy | `id` dạng `exp_` + uuid4 hex; thời gian ISO-8601 UTC |
 | `experiment_events` | Nhật ký theo thử nghiệm | Danh mục `event_type` ở mục 10.4 |
 | `lab_results` | Kết quả 1–1 với experiment (`result_kind`, `limitations`, `guard_passed`) | CHECK: `guard_passed=1` thì `limitations` không rỗng |
+| `idempotency_keys` | Khóa chống trùng của `POST /labs/{lab}/experiments` (D-23) | Migration `0003`; duy nhất theo (`user_id`, `key`); lưu vân tay SHA-256 của (Lab, thân); xóa theo experiment (`ON DELETE CASCADE`); bản ghi hết hạn chỉ được dọn khi khóa đó được dùng lại |
 
 ### 7.2. Bảng nghiệp vụ Lab (tuần 3–5, theo tiến độ TV2/TV3/TV4)
 
@@ -355,7 +365,7 @@ Sơ đồ ER đã chốt: `docs/spec/diagrams/07-er.png` (8 bảng); SQL nằm �
 | `media_assets` | Deepfake | Tuần 4 |
 | `prompt_cases`, `prompt_runs` | Prompt Injection | Tuần 3 |
 
-Mỗi bảng thêm bằng migration riêng; không sửa tay tệp `.db`.
+`media_assets`, `prompt_cases`, `prompt_runs` đã có ở migration `0002`. Mỗi bảng thêm bằng migration riêng; không sửa tay tệp `.db`.
 
 ### 7.3. Ràng buộc dữ liệu bắt buộc
 
@@ -364,13 +374,13 @@ Mỗi bảng thêm bằng migration riêng; không sửa tay tệp `.db`.
 - `prompt_runs.task_violated`: **nullable**; `judged_by` ∈ {rule, human} hoặc NULL.
 - `media_assets.consent_ref`, `source`, `label`: NOT NULL.
 - Khóa ngoại bật (`PRAGMA foreign_keys=ON` ở mỗi kết nối).
-- Định danh mờ có tiền tố: `usr_`, `lab_`, `exp_`, `res_`, `med_` (`media_assets`), `case_` (`prompt_cases`), `run_` (`prompt_runs`).
+- Định danh mờ có tiền tố: `usr_`, `lab_`, `exp_`, `res_`, `med_` (`media_assets`), `case_` (`prompt_cases`), `run_` (`prompt_runs`), `idk_` (`idempotency_keys`).
 
 ---
 
 ## 8. Hợp đồng API
 
-Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.8** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
+Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đồng REST API v0.12** và là nguồn chuẩn cho đường dẫn, phương thức, mã trạng thái, dạng lỗi và biểu diễn tài nguyên. Mục này chỉ tóm tắt.
 
 ### 8.1. Nguyên tắc
 
@@ -379,6 +389,7 @@ Hợp đồng API được tách thành tài liệu riêng **API-01 · Hợp đ�
 3. Mọi danh sách trả `{items, page, page_size, total}`.
 4. Lỗi theo **RFC 9457** (`application/problem+json`) với trường mở rộng `code`; sai dữ liệu = `422`, JSON hỏng = `400`.
 5. Một biểu diễn, nhiều định dạng bằng `Accept` (báo cáo `text/markdown` hoặc `application/json`).
+   Lặp yêu cầu an toàn bằng `Idempotency-Key` (FR-EXP-10); quá tải báo bằng `429 RATE_LIMITED` và `503 QUEUE_FULL` kèm `Retry-After`.
 6. `/sandbox/echo` nằm **ngoài** `/api/v1` vì là đối tượng bị thử, không phải tài nguyên nghiệp vụ.
 
 ### 8.2. Tài nguyên chính
@@ -487,7 +498,7 @@ Lab API gọi sandbox bằng **HTTP thật** tới `127.0.0.1` từ worker threa
 
 | Cổng | Biện pháp MVP | Yêu cầu |
 |---|---|---|
-| **1. Đầu vào** | JWT, vai trò, rate limit API điều khiển; kiểm tra tệp theo nội dung, dung lượng, thời lượng; tên tệp ngẫu nhiên; `Path.resolve()` + kiểm tra nằm trong `storage/`; Pydantic với khoảng giá trị | FR-AUTH-*, FR-DF-01 |
+| **1. Đầu vào** | JWT, vai trò, giới hạn tần suất theo người dùng (D-21), trần hàng đợi (D-22), `Idempotency-Key` (D-23); kiểm tra tệp theo nội dung, dung lượng, thời lượng; tên tệp ngẫu nhiên; `Path.resolve()` + kiểm tra nằm trong `storage/`; Pydantic với khoảng giá trị | FR-AUTH-*, FR-DF-01 |
 | **2. Xử lý** | Lab chạy trong worker; FFmpeg gọi bằng `subprocess.run([...], timeout=…)`, **không** `shell=True`; Ollama chỉ tới đích cấu hình (https, danh sách host cho phép, token, không theo redirect — D-18); LLM không được cấp công cụ; (S) kiểm tra hash model khi nạp | FR-PI-04, FR-EXP-05 |
 | **3. Đầu ra** | `result_guard` (6.1); nhãn trung thực; cảnh báo cố định; lọc log | FR-EXP-06, FR-DF-06 |
 
@@ -517,6 +528,11 @@ Loại bảo mật: `login_failed`, `file_rejected`, `rate_limited`, `lab_toggle
 | `DB_PATH` | `./storage/lab.db` |
 | `STORAGE_DIR` | `./storage` |
 | `CORS_ORIGINS` | danh sách origin frontend |
+| `LOGIN_RATE_LIMIT_PER_MINUTE` | 10 (số lần thử đăng nhập/phút/IP) |
+| `API_RATE_LIMIT_PER_MINUTE` | 120 (mọi request đã xác thực tới `labs`, `experiments`, `media-assets`, theo người dùng) |
+| `HEAVY_RATE_LIMIT_PER_MINUTE` | 10 (`POST` tạo experiment và tải tệp lên, theo người dùng) |
+| `MAX_QUEUED_JOBS` | 20 (trần số job đang chờ; đầy → `503 QUEUE_FULL`) |
+| `FFPROBE_TIMEOUT` | 10 giây; quá hạn coi như tệp không đọc được |
 | `OLLAMA_URL` | địa chỉ đường hầm HTTPS tới Ollama trên Colab (đổi mỗi phiên, **không commit**); để trống = Lab Prompt Injection báo `DEP_UNAVAILABLE` |
 | `OLLAMA_API_KEY` | **bí mật**, token gửi kèm mọi lời gọi; không có giá trị mặc định |
 | `OLLAMA_ALLOWED_HOSTS` | danh sách hậu tố host cho phép, ví dụ `trycloudflare.com,ngrok-free.app`; host ngoài danh sách bị từ chối |
@@ -556,6 +572,9 @@ Loại bảo mật: `login_failed`, `file_rejected`, `rate_limited`, `lab_toggle
 5. Sandbox: bật/tắt rate limit cho kết quả khác nhau; vượt trần `sent` → 422; body có URL không ảnh hưởng đích.
 6. Hai yêu cầu đồng thời → cả hai kết thúc, không `database is locked`.
 7. Client Ollama (dùng `httpx.MockTransport`, **không gọi Colab thật**): `OLLAMA_URL` dùng `http`/host ngoài danh sách → bị từ chối; token có trong header nhưng không có trong log/kết quả; phản hồi redirect không được theo; lỗi mạng giữa chừng → `failed`/`DEP_UNAVAILABLE`, các lượt đã xong vẫn lưu.
+8. Giới hạn tần suất (đồng hồ giả, không chờ thật): vượt `control`/`heavy` → `429` + `Retry-After`; `401` không bị tính; người dùng khác không bị ảnh hưởng. Hàng đợi đầy → `503 QUEUE_FULL`, nhưng dữ liệu sai vẫn `422`.
+9. `Idempotency-Key`: cùng khóa → cùng experiment; khác Lab/thân → `422`; theo từng người dùng; hết hạn dùng lại được; yêu cầu bị từ chối không giữ khóa; phát lại bỏ qua `QUEUE_FULL`.
+10. OpenAPI: mọi lỗi 4xx/5xx là `problem+json`, `$ref` đều trỏ tới schema có thật, mã lỗi thật nằm trong tài liệu của đúng endpoint.
 
 ---
 
@@ -580,6 +599,8 @@ Dựa trên khoảng cách ở 1.1. **Giai đoạn 0** không phụ thuộc quy�
 | T-13 | Upload an toàn (`core/files.py`) + `media_assets` | T-04 | 2–4 |
 | T-14 | Bộ test 11.1 | T-08 | 2–3 |
 | T-15 | Sơ đồ kiến trúc + ER trong `docs/` | — | 1 |
+
+**Tiến độ (22/11/2026).** Đã có trong mã: T-03 đến T-15, kèm bộ kiểm thử hợp đồng xuyên suốt (T-14, T-17 của API-01), giới hạn tần suất, trần hàng đợi, `Idempotency-Key` và tài liệu lỗi OpenAPI. Còn thiếu: T-01 chưa có `datasets/demo/`; T-02 chưa tách `requirements-labs`/`requirements-dev` (không bắt buộc); T-13 chưa nạp mẫu `origin=sample` (chờ `MANIFEST.csv` của TV2/TV3); client Ollama và service API Lab thật (TV4); mục 11.1 số 5 (vượt trần `sent` → 422 nằm ở `validate` của Lab API) và số 7 (client Ollama với `httpx.MockTransport`) phụ thuộc người khác.
 
 Bàn giao cuối tuần 1: backend khởi động được, đăng nhập được, `/labs` từ DB, stub 4 Lab chạy qua vòng đời, **hợp đồng API và `LabService` được công bố**.
 
@@ -619,6 +640,18 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 
 ---
 
+### 13.4. Giới hạn đã biết của bản cài đặt hiện tại
+
+| Giới hạn | Ghi chú |
+|---|---|
+| Bộ đếm tần suất nằm trong bộ nhớ | Mất khi khởi động lại, không chia sẻ giữa nhiều tiến trình (D-21); đủ cho demo một máy |
+| Starlette nhận trọn thân `multipart` trước khi vào handler | Hạn mức tần suất và `Content-Length` chỉ chặn được sau đó; thân `chunked` chỉ bị `413` sau khi nhận trọn. Nếu mở ra ngoài mạng nhóm, đặt reverse proxy giới hạn kích thước thân |
+| Job `queued` vẫn chạy nếu Lab bị tắt sau khi đã nhận | Chưa quyết: hủy hay chạy (hiện chạy) |
+| Chưa có hủy job (`cancel`) | Job đang chạy chỉ dừng bằng timeout |
+| Xóa media không xóa kết quả experiment cũ đã dùng nó | Kết quả cũ giữ nguyên; mẫu `sample` không xóa được (`409`) |
+| Mẫu `origin=sample` chưa được nạp | Chờ `MANIFEST.csv` |
+| `idempotency_keys` chỉ dọn bản ghi hết hạn khi khóa được dùng lại | Số bản ghi không vượt số experiment (xóa theo experiment) và bị chặn bởi `heavy` 10/phút/người dùng |
+
 ## Phụ lục A. Thuật ngữ
 
 | Thuật ngữ | Nghĩa trong tài liệu |
@@ -643,3 +676,4 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 | 0.6 | 20/11/2026 | Thêm `LabRunError` (FR-PI-10): service báo lỗi có mã (`DEP_UNAVAILABLE`, `JOB_TIMEOUT`) và lưu `partial_records` hợp lệ; mã lạ → `INTERNAL_ERROR`; `message` không trả client; không có `lab_results` cho job lỗi này; thêm event `dep_unavailable` (5.2, 9.1, 10.4); API-01 lên v0.6 |
 | 0.7 | 20/11/2026 | T-10: chốt `GET /api/v1/health` (FR-OPS-01): thành phần `database`, `worker`, `ffmpeg`, `ollama`; trạng thái tổng `ok`/`degraded`/`down`; `503` chỉ khi DB hoặc worker hỏng; Ollama cache 30 s, timeout 2 s, mã lý do cố định; API-01 lên v0.7 |
 | 0.8 | 21/11/2026 | T-12: chốt `/sandbox/echo` (FR-API-01): token Lab nội bộ, bật/tắt rate limit theo từng request (`X-Lab-Rate-Limit`), bộ đếm tách theo chế độ và khóa chạy, 429 + `Retry-After`; thêm `SANDBOX_*` (10.5); API-01 lên v0.8 |
+| 0.9 | 22/11/2026 | Đồng bộ với mã sau chat 7–8: upload an toàn và `MISSING_CONSENT` (FR-DF-01/02); thêm D-19, D-20 (từ API-01), D-21 (giới hạn tần suất theo người dùng), D-22 (trần hàng đợi, `QUEUE_FULL`), D-23 (`Idempotency-Key`, bảng `idempotency_keys`, migration 0003); thêm FR-EXP-10/11, FR-OPS-05/06; sửa 5.3, 7, 8.1, 10.1, 10.5, 11.1; thêm tiến độ ở 12 và mục 13.4 (giới hạn đã biết); API-01 lên v0.12 |
