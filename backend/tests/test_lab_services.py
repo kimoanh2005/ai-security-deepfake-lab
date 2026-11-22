@@ -73,7 +73,7 @@ def test_run_emits_events_and_respects_deadline(settings):
     svc = get_service("api_lab")
     ctx = ctx_for(settings)
     svc.run(ctx, svc.validate(CASES["api_lab"], settings))
-    assert ctx.events and ctx.events[0]["event_type"] == "stub"
+    assert ctx.events and ctx.events[0]["event_type"] == "api_start"
     with pytest.raises(JobCancelled):
         svc.run(ctx_for(settings, timeout=-1), svc.validate(CASES["api_lab"], settings))
 

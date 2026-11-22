@@ -5,6 +5,7 @@ os.environ.setdefault("JWT_SECRET", "pytest-secret-0123456789abcdef")
 
 from pathlib import Path
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -16,6 +17,15 @@ from app.main import create_app
 from app.models import User
 
 TEST_ROUNDS = 4  # bcrypt rẻ cho test
+
+
+@pytest.fixture(autouse=True)
+def fake_sandbox_for_api_lab(monkeypatch):
+    """Lab API gửi request HTTP thật tới /sandbox/echo; trong test không có máy chủ nên dùng sandbox giả luôn trả 200.
+    Test cần hành vi 429/lỗi tự gán `ApiLabService.transport` riêng."""
+    from app.services.labs.api_lab import ApiLabService
+
+    monkeypatch.setattr(ApiLabService, "transport", httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True})))
 
 
 def alembic_upgrade(engine) -> None:

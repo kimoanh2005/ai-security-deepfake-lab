@@ -102,7 +102,7 @@ def types(snap) -> list[str]:
 # ---- vòng đời ----
 
 def test_lifecycle_queued_running_done_with_real_stub(app, make_orch, user_id):
-    orch = make_orch()  # registry thật: stub api_lab
+    orch = make_orch()  # registry thật: api_lab (sandbox giả, xem conftest)
     orch.start()
     exp = orch.submit(user_id, "api_lab", API_PAYLOAD)
     assert exp.state == "queued" and exp.id.startswith("exp_")
@@ -112,7 +112,7 @@ def test_lifecycle_queued_running_done_with_real_stub(app, make_orch, user_id):
     assert snap.exp.state == "done"
     assert snap.exp.started_at and snap.exp.finished_at and snap.exp.error_code is None
     assert snap.exp.started_at <= snap.exp.finished_at
-    assert types(snap) == ["queued", "job_started", "stub", "job_finished"]
+    assert types(snap) == ["queued", "job_started", "api_start", "api_done", "job_finished"]
     assert snap.result.guard_passed == 1 and snap.result.result_kind == "simulated"
     assert snap.result.limitations and snap.result.result_data["components"][0]["kind"] == "simulated"
     assert snap.result.guard_details["passed"] is True
