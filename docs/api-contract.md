@@ -27,7 +27,8 @@ Tài liệu mô tả **hợp đồng đích**. Không phải endpoint nào cũng
 | Sandbox | `GET/POST /sandbox/echo` | **Đã có** (6.9) | T-12 |
 | Media | `POST/GET /media-assets`, `/{id}` (ETag/304), `/{id}/content`, `DELETE` (admin) | **Đã có** (5.1); mẫu `origin=sample` chưa được nạp (cần `datasets/demo/MANIFEST.csv`) | T-13 |
 | Kịch bản/ca | `/labs/{lab}/scenarios`, `/labs/prompt_injection/cases` | Chưa có (cần TV4 cung cấp nội dung) | sau T-09 |
-| Khác | `artifacts`, `verification`, `prompt-runs`, `DELETE`, `models`, `users` | Chưa có (ưu tiên S/C) | sau MVP |
+| Khác | `artifacts`, `verification`, `DELETE`, `models`, `users` | Chưa có (ưu tiên S/C) | sau MVP |
+| Prompt Injection | `GET`/`PATCH /experiments/{id}/prompt-runs` | Đã có | ASR trong `GET /experiments/{id}` và báo cáo được tính lại từ `prompt_runs` sau khi chấm tay (FR-PI-07) |
 
 Hành vi cụ thể của T-09 (ngoài những gì mục 3–8 đã nêu):
 
@@ -36,7 +37,7 @@ Hành vi cụ thể của T-09 (ngoài những gì mục 3–8 đã nêu):
 - `links` của experiment hiện chỉ có `self`, `events`, `report`; `prompt_runs`/`artifacts` thêm khi endpoint tồn tại.
 - Thiếu hẳn thân yêu cầu ở `POST` → `400 MALFORMED_REQUEST` (thiếu một trường trong thân vẫn là `422`).
 - `result_kind` chỉ lọc được trên experiment đã `done` (kết quả bị guard từ chối không có nhãn).
-- **Chưa làm:** `DELETE`, `artifacts`, `prompt-runs`, `verification`.
+- **Chưa làm:** `DELETE`, `artifacts`, `verification`.
 
 Đối chiếu với `/openapi.json` (19/11/2026): 5 endpoint đã có khớp tài liệu về đường dẫn, phương thức, mã thành công, `operation_id` (`login`, `get_current_user`, `list_labs`, `get_lab`, `update_lab`) và dạng lỗi. Hai chỗ lệch cần biết:
 

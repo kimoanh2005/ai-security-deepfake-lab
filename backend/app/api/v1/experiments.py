@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, StrictBool
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,7 +22,8 @@ from app.core.openapi import problem_responses
 from app.core.ratelimit import control_limit, heavy_limit
 from app.core.query import PageParams, collection, reject_unknown_query
 from app.deps import get_current_user, get_db, get_orchestrator
-from app.models import Experiment, ExperimentEvent, Lab, User
+from app.services.labs.pi_cases import CASES_BY_CODE
+from app.models import Experiment, ExperimentEvent, Lab, PromptCase, PromptRun, User
 from app.models import LabResult as LabResultRow
 
 router = APIRouter(tags=["experiments"], dependencies=[Depends(control_limit)])
@@ -60,6 +62,9 @@ def experiment_out(exp: Experiment, lab_code: str, result_row: LabResultRow | No
     if done:
         result = {**result_row.result_data, "limitations": list(result_row.limitations)}
     base = f"/api/v1/experiments/{exp.id}"
+    links = {"self": base, "events": f"{base}/events", "report": f"{base}/report"}
+    if lab_code == "prompt_injection":
+        links["prompt_runs"] = f"{base}/prompt-runs"
     return {
         "id": exp.id,
         "lab": lab_code,
@@ -73,8 +78,8 @@ def experiment_out(exp: Experiment, lab_code: str, result_row: LabResultRow | No
         "duration_ms": _duration_ms(exp.started_at, exp.finished_at),
         "result": result,
         "error": {"code": exp.error_code, "message": exp.error_message} if exp.state == "failed" else None,
-        # Chỉ liệt kê tài nguyên con đã có thật (prompt_runs, artifacts thêm khi endpoint tồn tại).
-        "links": {"self": base, "events": f"{base}/events", "report": f"{base}/report"},
+        # Chỉ liệt kê tài nguyên con đã có thật (artifacts thêm khi endpoint tồn tại).
+        "links": links,
     }
 
 
@@ -96,6 +101,36 @@ def _load(db: Session, exp_id: str) -> tuple[Experiment, str, LabResultRow | Non
     lab_code = db.scalar(select(Lab.code).where(Lab.id == exp.lab_id))
     result_row = db.scalar(select(LabResultRow).where(LabResultRow.experiment_id == exp.id))
     return exp, lab_code, result_row
+
+
+
+# ---- Prompt Injection: số liệu tính lại từ prompt_runs (sau khi người chấm tay) ----
+
+def _refresh_pi_metrics(db: Session, body: dict[str, Any]) -> dict[str, Any]:
+    """`metrics` lưu lúc chạy chỉ chứa kết luận của quy tắc. Sau khi người chấm tay (PATCH prompt-runs) ASR phải
+    tính lại (FR-PI-07: chỉ công bố khi MỌI lượt tấn công của nhánh đã có kết luận). Chỉ ghi đè các khóa này."""
+    if body["lab"] != "prompt_injection" or not body.get("result"):
+        return body
+    rows = db.execute(
+        select(PromptCase.code, PromptRun.defense, PromptRun.task_violated)
+        .join(PromptCase, PromptCase.id == PromptRun.case_id)
+        .where(PromptRun.experiment_id == body["id"])
+    ).all()
+    if not rows:
+        return body
+    metrics = dict(body["result"].get("metrics", {}))
+    metrics["judged"] = sum(r.task_violated is not None for r in rows)
+    metrics["needs_review"] = sum(r.task_violated is None for r in rows)
+    for flag, name in ((0, "baseline"), (1, "defense")):
+        attacks = [r for r in rows if r.defense == flag and CASES_BY_CODE.get(r.code, {}).get("category") in ("attack", "indirect")]
+        if not attacks:
+            continue
+        judged = [r for r in attacks if r.task_violated is not None]
+        complete = len(judged) == len(attacks)
+        metrics[name] = {"attack_runs": len(attacks), "judged": len(judged),
+                         "asr": sum(r.task_violated == 1 for r in attacks) / len(attacks) if complete else None}
+    body["result"] = {**body["result"], "metrics": metrics}
+    return body
 
 
 # ---- tạo ----
@@ -228,7 +263,7 @@ def get_experiment(
     _user: User = Depends(get_current_user),
 ):
     exp, lab_code, result_row = _load(db, exp_id)
-    body = experiment_out(exp, lab_code, result_row)
+    body = _refresh_pi_metrics(db, experiment_out(exp, lab_code, result_row))
     etag = _etag(body)
     headers = {"ETag": etag, "Cache-Control": "no-cache"}
     if _matches(request.headers.get("if-none-match"), etag):
@@ -323,7 +358,7 @@ def get_experiment_report(
     exp, lab_code, result_row = _load(db, exp_id)
     if exp.state in ("queued", "running"):
         raise AppError(409, "STATE_CONFLICT", "Thử nghiệm chưa kết thúc nên chưa có báo cáo.")
-    body = experiment_out(exp, lab_code, result_row)
+    body = _refresh_pi_metrics(db, experiment_out(exp, lab_code, result_row))
     events = [event_out(e) for e in db.scalars(
         select(ExperimentEvent).where(ExperimentEvent.experiment_id == exp_id).order_by(ExperimentEvent.id)
     )]
@@ -334,3 +369,78 @@ def get_experiment_report(
             media_type="application/json", headers=headers,
         )
     return Response(render_markdown(body, events), media_type="text/markdown; charset=utf-8", headers=headers)
+
+
+# ---- Prompt Injection: từng lượt gọi mô hình và chấm tay ----
+
+def prompt_run_out(run: PromptRun, case_code: str) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "case_code": case_code,
+        "attempt": run.attempt,
+        "defense": bool(run.defense),
+        "response": run.response,
+        "latency_ms": run.latency_ms,
+        "model_name": run.model_name,
+        "task_violated": None if run.task_violated is None else bool(run.task_violated),
+        "judged_by": run.judged_by,
+    }
+
+
+@router.get("/experiments/{exp_id}/prompt-runs", operation_id="list_prompt_runs")
+def list_prompt_runs(
+    exp_id: str,
+    request: Request,
+    params: PageParams = Depends(),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    reject_unknown_query(request, {"page", "page_size"})
+    _load(db, exp_id)
+    base = select(PromptRun, PromptCase.code).join(PromptCase, PromptCase.id == PromptRun.case_id).where(
+        PromptRun.experiment_id == exp_id
+    )
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    rows = db.execute(
+        base.order_by(PromptRun.created_at, PromptRun.id).offset(params.offset).limit(params.page_size)
+    ).all()
+    return collection([prompt_run_out(run, code) for run, code in rows], params, total)
+
+
+class JudgeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_violated: StrictBool | None  # bắt buộc có khóa; null = bỏ đánh giá
+
+
+@router.patch(
+    "/experiments/{exp_id}/prompt-runs/{run_id}",
+    operation_id="judge_prompt_run",
+    responses=problem_responses({404: "NOT_FOUND: không có thử nghiệm hoặc lượt chạy trong thử nghiệm này."}),
+)
+def judge_prompt_run(
+    exp_id: str,
+    run_id: str,
+    payload: JudgeIn,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    _load(db, exp_id)
+    row = db.execute(
+        select(PromptRun, PromptCase.code)
+        .join(PromptCase, PromptCase.id == PromptRun.case_id)
+        .where(PromptRun.id == run_id, PromptRun.experiment_id == exp_id)
+    ).first()
+    if row is None:
+        raise AppError(404, "NOT_FOUND", "Không tìm thấy lượt chạy trong thử nghiệm này.")
+    run, case_code = row
+    previous = {"task_violated": run.task_violated, "judged_by": run.judged_by}
+    run.task_violated = None if payload.task_violated is None else int(payload.task_violated)
+    run.judged_by = None if payload.task_violated is None else "human"
+    db.add(ExperimentEvent(
+        experiment_id=exp_id, level="info", event_type="prompt_run_judged",
+        message="Người chấm đặt kết luận cho một lượt chạy.",
+        data_json={"run_id": run_id, "case_code": case_code, "previous": previous,
+                   "task_violated": run.task_violated, "judged_by": run.judged_by},
+    ))
+    db.commit()
+    return prompt_run_out(run, case_code)
