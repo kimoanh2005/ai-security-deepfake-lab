@@ -1,0 +1,5 @@
+filename,label,source,consent_ref,technique,notes
+# Điền các mẫu video/thư mục khung hình hợp lệ bên dưới (FR-DF-02). MỌI dòng bắt buộc có consent_ref.
+# Ví dụ:
+# orig_01.mp4,original,Nhóm tự quay bằng webcam,CONSENT-TEAM-2026-01,none,Ánh sáng tốt nhìn thẳng
+# fake_01.mp4,synthetic,FaceForensics++ (c23 academic),FFPP-LICENSE-ACADEMIC-2026,face_swap,Deepfakes c23
