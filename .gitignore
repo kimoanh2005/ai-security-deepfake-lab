@@ -77,3 +77,13 @@ frontend/.env
 .DS_Store
 Thumbs.db
 *.log
+
+# --- TV3 Deepfake: trọng số mô hình, video mẫu & khung hình trích xuất cục bộ ---
+backend/models/
+datasets/demo/extracted/
+datasets/demo/videos/
+datasets/demo/*.mp4
+datasets/demo/*.mov
+datasets/demo/*.webm
+datasets/demo/*.avi
+docs/security-assessment.md

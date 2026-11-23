@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     max_video_seconds: float = Field(default=60.0, gt=0)      # độ dài tối đa video tải lên
     ffprobe_timeout: float = Field(default=10.0, gt=0)        # giây; quá hạn coi như tệp không đọc được
     max_frames: int = Field(default=24, ge=1)                 # số khung hình tối đa mỗi video (Deepfake)
+    # Cấu hình detector Deepfake (TV3, FR-DF-04/05). Để trống deepfake_model_path = chưa tích hợp (not_integrated).
+    deepfake_model_path: str = ""                           # đường dẫn tệp .onnx cục bộ (không commit lên Git)
+    deepfake_model_name: str = ""                           # tên & phiên bản mô hình hiển thị trong kết quả
+    deepfake_model_sha256: str = ""                         # SHA-256 kỳ vọng của tệp trọng số (kiểm toàn vẹn Cổng 2)
+    deepfake_threshold: float = Field(default=0.5, ge=0.0, le=1.0)  # ngưỡng phân loại suspected / not_detected
+    deepfake_min_faces: int = Field(default=3, ge=1)        # số khung hình có mặt tối thiểu; thiếu → insufficient_data
+    deepfake_input_size: int = Field(default=224, ge=32, le=1024)   # kích thước ảnh đầu vào của mô hình ONNX
     max_pi_calls: int = Field(default=60, ge=1)               # số lần gọi mô hình tối đa mỗi experiment (FR-PI-09)
     max_events_per_experiment: int = Field(default=200, ge=1)  # chống một Lab lỗi vòng lặp làm phình CSDL
     max_result_bytes: int = Field(default=262144, ge=1024)    # kích thước tối đa result (G7), 256 KiB
@@ -75,6 +82,14 @@ class Settings(BaseSettings):
     @property
     def storage_path(self) -> Path:
         return (BASE_DIR / self.storage_dir).resolve()
+
+    @property
+    def deepfake_model_file(self) -> Path | None:
+        raw = self.deepfake_model_path.strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        return p.resolve() if p.is_absolute() else (BASE_DIR / p).resolve()
 
     @property
     def cors_list(self) -> list[str]:
