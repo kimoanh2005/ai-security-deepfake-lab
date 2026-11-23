@@ -79,6 +79,15 @@ Hoặc chạy một lệnh từ thư mục dự án (tự chạy `alembic upgrad
 - Tài liệu API Swagger: <http://127.0.0.1:8000/docs>
 - Kiểm tra danh sách Lab: <http://127.0.0.1:8000/api/v1/labs>
 
+### Lab Prompt Injection với Ollama trên Colab
+
+1. Chạy các ô notebook Colab (cài Ollama, tạo model `security-bot`, mở tunnel `cloudflared`) và copy link `https://….trycloudflare.com`.
+2. Trong `backend\.env`: `OLLAMA_URL=<link>`, `OLLAMA_MODEL=security-bot`, `JOB_TIMEOUT_PROMPT_INJECTION=900`. Link **đổi mỗi lần** chạy lại ô tunnel; sửa `.env` rồi khởi động lại backend.
+3. Kiểm tra <http://127.0.0.1:8000/api/v1/health>: phần `ollama` phải là `up`.
+4. Chạy thử: đăng nhập, `POST /api/v1/labs/prompt_injection/experiments` với `{"case_codes": ["PI-05", "PI-12"]}`, rồi chấm tay các lượt còn thiếu bằng `PATCH /api/v1/experiments/{id}/prompt-runs/{run_id}`. Chi tiết payload và kết quả: `docs/integration.md` mục 13.
+
+Mật khẩu admin do `seed` in MỘT LẦN nếu `SEED_ADMIN_PASSWORD` để trống; muốn đặt lại, điền `SEED_ADMIN_PASSWORD` trong `.env` rồi xóa `backend/storage/lab.db*` và chạy lại `scripts\start.ps1`.
+
 ### Frontend
 
 Từ cửa sổ frontend, đang ở `frontend`:

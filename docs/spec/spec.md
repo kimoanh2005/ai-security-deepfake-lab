@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Tài liệu** | SPEC-01 · Đặc tả yêu cầu và kiến trúc backend (hợp đồng API chi tiết: API-01) |
-| **Phiên bản** | 0.9 (bản nháp để nhóm xác nhận; đồng bộ với mã: upload an toàn, giới hạn tần suất, trần hàng đợi, `Idempotency-Key`, lỗi `problem+json` trong OpenAPI) |
-| **Ngày** | 22/11/2026 |
+| **Phiên bản** | 0.10 (bản nháp để nhóm xác nhận; đồng bộ với mã: tích hợp TV4 — Prompt Injection và API Lab thật, `prompt-runs`, ASR tính lại) |
+| **Ngày** | 23/11/2026 |
 | **Người phụ trách** | TV1 (Trưởng nhóm, kiến trúc & backend) |
 | **Căn cứ** | Bản đề xuất sản phẩm (SP); báo cáo "AI Security và Deepfake" (1.3.2, 3.2.1–3.2.3); thiết kế backend v0 (Phần B); quét repo ngày 15/11/2026 |
 | **Trạng thái** | Các mục đánh dấu **[ĐỀ XUẤT]** là quyết định mặc định của TV1, chưa được nhóm xác nhận. Các mục **[MỞ]** cần nhóm quyết. |
@@ -81,6 +81,7 @@ Các câu hỏi mở ở phần phân tích hướng đi trước đó được 
 | D-20 | Chưa có refresh token ở MVP; chỉ access token `JWT_EXPIRE_MINUTES` | Refresh cần thêm bảng, `/auth/refresh`, `/auth/logout`; chưa cần cho demo một máy | Muốn phiên dài: tăng `JWT_EXPIRE_MINUTES` hoặc làm refresh ở bản sau |
 | D-21 | **Giới hạn tần suất API điều khiển theo người dùng** (không theo IP), cửa sổ trượt 60 s, **bộ đếm trong bộ nhớ** (một tiến trình): `control` 120/phút cho `labs`, `experiments`, `media-assets`; `heavy` 10/phút cho `POST /labs/{lab}/experiments` và `POST /media-assets`. Đăng nhập đếm theo IP. Request thiếu/sai token nhận `401` và **không** bị tính | Nhiều người dùng chung một IP khi demo; thao tác tốn tài nguyên cần hạn mức chặt hơn; không thêm Redis (D-04) | Nhiều tiến trình/máy: cần kho đếm dùng chung (bộ đếm hiện mất khi khởi động lại và không chia sẻ giữa tiến trình) |
 | D-22 | **Trần hàng đợi** `MAX_QUEUED_JOBS` (20, không tính job đang chạy); đầy → `503 QUEUE_FULL` + `Retry-After`, **kiểm sau validate** (dữ liệu sai vẫn nhận `422`) và trong cùng khóa với việc xếp hàng | Chống một người làm đầy hàng đợi của worker đơn; kiểm trong khóa để không bị chen ngang | Bỏ trần: hàng đợi tăng không giới hạn khi worker chậm |
+| D-24 | **Tích hợp TV4:** `backend` của TV1 là nền; giữ bộ 14 ca, luật phát hiện/chặn/chấm của TV4 (bọc thành `LabService`, ca `PI-01…PI-14`) và phép đo API Lab (`burst-N`); **không** dùng `set-url`, SQLite riêng, `requests`; **`summary_lab` ngoài MVP**. Số liệu ASR tính lại từ `prompt_runs` mỗi lần đọc (sau khi chấm tay) | Không viết lại nghiệp vụ TV4; vẫn tuân hợp đồng TV1 và D-18; ASR không bị đóng băng ở giá trị lúc chạy | Giữ Lab tóm tắt: thêm Lab thứ năm, FR và catalog |
 | D-23 | **`Idempotency-Key` lưu trong CSDL** (bảng `idempotency_keys`, migration `0003`), phạm vi theo người dùng, hiệu lực 10 phút kể từ lúc tạo experiment; cùng khóa + cùng Lab + cùng thân → trả lại experiment cũ; khác Lab/thân → `422 IDEMPOTENCY_KEY_REUSED`; yêu cầu bị từ chối không giữ khóa | Chống bấm đúp làm đầy hàng đợi (D-22) và tồn tại qua khởi động lại; so sánh theo vân tay SHA-256 của (Lab, thân) | Lưu trong bộ nhớ: gọn hơn nhưng mất khi khởi động lại |
 
 ---
@@ -174,7 +175,7 @@ Mỗi yêu cầu có tiêu chí chấp nhận (**AC**) kiểm chứng được. 
 | FR-PI-03 | Mỗi lần gọi mô hình lưu một dòng `prompt_runs` (phản hồi, độ trễ, tên mô hình, nhánh) | M | SP A.9.2 | — |
 | FR-PI-04 | Gọi Ollama (chạy trên **Colab**, D-18) chỉ tới địa chỉ cấu hình `OLLAMA_URL`: bắt buộc `https`, host phải thuộc `OLLAMA_ALLOWED_HOSTS` (ví dụ hậu tố `trycloudflare.com`/`ngrok-free.app`), kèm `Authorization: Bearer OLLAMA_API_KEY`; không theo chuyển hướng (redirect) sang host khác; không có tham số URL từ client; token không xuất hiện trong log, `/health` hay kết quả | M | SP A.11, D-18 | Body có URL → 422; `OLLAMA_URL` sai host/`http` → từ chối khởi tạo client, `/health` báo `down` |
 | FR-PI-05 | `task_violated` mặc định `NULL`; chỉ quy tắc tự động (`judged_by=rule`) hoặc người dùng (`human`) mới đặt giá trị | M | SP A.4.2, D-08 | Không có giá trị mặc định 0 |
-| FR-PI-06 | `PATCH /experiments/{id}/prompt-runs/{run_id}` cho phép người chấm/ghi đè `task_violated` | S | UC-08 | Ghi `judged_by=human`, ghi event |
+| FR-PI-06 | `PATCH /experiments/{id}/prompt-runs/{run_id}` cho phép người chấm/ghi đè `task_violated` (và `GET .../prompt-runs` liệt kê lượt chạy). **Đã cài (v0.10).** | S | UC-08 | Ghi `judged_by=human`, ghi event `prompt_run_judged`; ASR trong `GET /experiments/{id}` và báo cáo được tính lại |
 | FR-PI-07 | Tổng hợp ASR chỉ tính khi mọi lần chạy trong nhánh đã được chấm; nếu còn `NULL` hiển thị "chưa đủ dữ liệu" | M | SP A.4.2 | — |
 | FR-PI-08 | Kết quả liệt kê **cả ca phòng thủ không hiệu quả** | M | SP A.4.2 | `metrics.failed_cases` không bị lọc bỏ |
 | FR-PI-09 | Trần cứng số lần gọi mô hình mỗi experiment (khởi đầu: 60) | M | SP A.11 | Vượt → 422 `VALIDATION_ERROR` |
@@ -677,3 +678,4 @@ Phát hiện chính xác mọi Deepfake mới; xác minh danh tính người tro
 | 0.7 | 20/11/2026 | T-10: chốt `GET /api/v1/health` (FR-OPS-01): thành phần `database`, `worker`, `ffmpeg`, `ollama`; trạng thái tổng `ok`/`degraded`/`down`; `503` chỉ khi DB hoặc worker hỏng; Ollama cache 30 s, timeout 2 s, mã lý do cố định; API-01 lên v0.7 |
 | 0.8 | 21/11/2026 | T-12: chốt `/sandbox/echo` (FR-API-01): token Lab nội bộ, bật/tắt rate limit theo từng request (`X-Lab-Rate-Limit`), bộ đếm tách theo chế độ và khóa chạy, 429 + `Retry-After`; thêm `SANDBOX_*` (10.5); API-01 lên v0.8 |
 | 0.9 | 22/11/2026 | Đồng bộ với mã sau chat 7–8: upload an toàn và `MISSING_CONSENT` (FR-DF-01/02); thêm D-19, D-20 (từ API-01), D-21 (giới hạn tần suất theo người dùng), D-22 (trần hàng đợi, `QUEUE_FULL`), D-23 (`Idempotency-Key`, bảng `idempotency_keys`, migration 0003); thêm FR-EXP-10/11, FR-OPS-05/06; sửa 5.3, 7, 8.1, 10.1, 10.5, 11.1; thêm tiến độ ở 12 và mục 13.4 (giới hạn đã biết); API-01 lên v0.12 |
+| 0.10 | 23/11/2026 | Tích hợp TV4 (D-24): Prompt Injection và API Lab là service thật (client Ollama bằng `httpx`, 14 ca `PI-xx`, seed `prompt_cases`, `burst-N`); cài FR-PI-06 (`GET`/`PATCH prompt-runs`, event `prompt_run_judged`) và ASR tính lại từ `prompt_runs`; `summary_lab` ngoài phạm vi; INT-01 lên v0.4, API-01 lên v0.13 |

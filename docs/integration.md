@@ -1,9 +1,9 @@
-# HƯỚNG DẪN TÍCH HỢP LAB (`LabService`) — dành cho TV2, TV3, TV4
+# HƯỚNG DẪN TÍCH HỢP LAB (`LabService`) — dành cho TV2, TV3, TV4 (và TV5 ở mục 13)
 
 | | |
 |---|---|
 | **Tài liệu** | INT-01 · Hướng dẫn viết service cho một Lab |
-| **Phiên bản** | 0.3 (21/11/2026) — theo SPEC-01 v0.8 mục 5, 6, 9 và mã `backend/app/services/`, `backend/app/jobs/orchestrator.py` |
+| **Phiên bản** | 0.4 (23/11/2026) — theo SPEC-01 v0.10; Prompt Injection và API Lab của TV4 đã tích hợp (mục 13) |
 | **Người phụ trách** | TV1 |
 | **Đọc kèm** | `docs/api-contract.md` (REST mà frontend gọi), `docs/spec/spec.md` (đặc tả) |
 
@@ -263,9 +263,9 @@ Chạy cả vòng đời qua orchestrator (hàng đợi, ghi DB): copy cách d�
 
 **TV2/TV3 — Deepfake.** Cấu trúc thư mục bàn giao TV2 → TV3 (SPEC 9.3): `storage/experiments/<experiment_id>/` gồm `metadata.json` (`duration_s, fps, width, height, codec, frame_count, has_audio`), `frames/000001.jpg…`, `audio.wav` (nếu có; MVP không phân tích âm thanh, D-03, ghi vào `limitations`). Video lấy theo `asset_id` (bảng `media_assets`); **không** nhận đường dẫn từ client. Lấy đường dẫn tệp bằng `app.core.files.safe_storage_path(settings.storage_path, media.file_path)` (T-13; từ chối `..`, dấu phân cách, đường dẫn tuyệt đối và symlink thoát khỏi `storage/`); `media_assets.file_path` là tên ngẫu nhiên tương đối trong `storage/`. Video tải lên đã được kiểm theo nội dung, dung lượng, thời lượng (`meta_json`: `duration_s, fps, width, height, codec`). FFmpeg gọi bằng `subprocess.run([...], timeout=…)`. Chưa có detector được phê duyệt: giữ `detector: not_integrated`, không điểm số, `components` gồm `preprocess` (`real` nếu chạy thật) và `detector` (`planned`), nên `result_kind = "planned"`; Lab trần `simulated` vẫn chấp nhận nhãn thấp hơn. Có detector (MỞ-6, chốt cuối tuần 4): thêm `suspicion_score`, `verdict ∈ {suspected, not_detected, insufficient_data}`, ngưỡng đặt trước và lưu cùng kết quả; **không** dùng khóa `probability`/`accuracy`.
 
-**TV4 — Prompt Injection.** Một experiment chạy cả hai nhánh `defenses` với cùng ca, cùng mô hình, cùng `repeat` (D-07). Gọi Ollama (trên Colab, D-18) **chỉ** tới `settings.ollama_url` kèm `Authorization: Bearer settings.ollama_api_key`: `https` bắt buộc, host thuộc `ollama_allowed_hosts`, `follow_redirects=False`, timeout `ollama_connect_timeout`/`ollama_read_timeout`, không đưa token vào log/event/kết quả, phản hồi mô hình là **dữ liệu không tin cậy** (không thực thi, không dùng làm URL/đường dẫn). Chỉ gửi văn bản tổng hợp trong `prompt_cases` (FR-PI-12). `metrics.model_name`, `metrics.endpoint_kind = "colab"`, và `limitations` nêu mô hình chạy trên dịch vụ ngoài (FR-PI-11). Thành phần `ollama_chat` có `kind="real"` **chỉ khi** có phản hồi thật. ASR chỉ tính khi mọi lượt trong nhánh đã được chấm; còn `None` thì ghi "chưa đủ dữ liệu". Liệt kê cả ca phòng thủ không hiệu quả (`metrics.failed_cases`). Colab ngắt giữa chừng (FR-PI-10): ném `LabRunError("DEP_UNAVAILABLE", ..., {"prompt_runs": rows_da_co})` (mục 6b) để experiment `failed` đúng mã mà không mất các lượt đã chạy; các lượt từng phần không được dùng để tính ASR.
+**TV4 — Prompt Injection.** *(Đã tích hợp, xem mục 13; đoạn dưới là quy tắc nền.)* Một experiment chạy cả hai nhánh `defenses` với cùng ca, cùng mô hình, cùng `repeat` (D-07). Gọi Ollama (trên Colab, D-18) **chỉ** tới `settings.ollama_url` kèm `Authorization: Bearer settings.ollama_api_key`: `https` bắt buộc, host thuộc `ollama_allowed_hosts`, `follow_redirects=False`, timeout `ollama_connect_timeout`/`ollama_read_timeout`, không đưa token vào log/event/kết quả, phản hồi mô hình là **dữ liệu không tin cậy** (không thực thi, không dùng làm URL/đường dẫn). Chỉ gửi văn bản tổng hợp trong `prompt_cases` (FR-PI-12). `metrics.model_name`, `metrics.endpoint_kind = "colab"`, và `limitations` nêu mô hình chạy trên dịch vụ ngoài (FR-PI-11). Thành phần `ollama_chat` có `kind="real"` **chỉ khi** có phản hồi thật. ASR chỉ tính khi mọi lượt trong nhánh đã được chấm; còn `None` thì ghi "chưa đủ dữ liệu". Liệt kê cả ca phòng thủ không hiệu quả (`metrics.failed_cases`). Colab ngắt giữa chừng (FR-PI-10): ném `LabRunError("DEP_UNAVAILABLE", ..., {"prompt_runs": rows_da_co})` (mục 6b) để experiment `failed` đúng mã mà không mất các lượt đã chạy; các lượt từng phần không được dùng để tính ASR.
 
-**TV4 — API Security.** Gửi **request HTTP thật** (`httpx`) tới `/sandbox/echo` trên `127.0.0.1` từ worker; đích cố định, không nhận URL (FR-API-04). Đo số gửi/200/429 và độ trễ p50/p95 (FR-API-03); mỗi `429` ghi `ctx.emit("warn", "rate_limited", …)`. Trần `MAX_API_LAB_REQUESTS`. `limitations` luôn nêu Rate Limiting đơn lẻ không chống được mọi dạng DoS/DDoS (FR-API-06). `/sandbox/echo` do TV1 dựng (T-12, API-01 mục 6.9): gọi `ctx.settings.sandbox_base_url + "/sandbox/echo"` với header `X-Lab-Token: ctx.settings.sandbox_token`, `X-Lab-Rate-Limit: on|off` (mỗi giá trị trong `rate_limit_modes` ứng với một nhánh), `X-Lab-Run: ctx.experiment_id` để mỗi lần chạy có bộ đếm riêng. Tham số kịch bản (`window`, `max_requests`) do TV4 chọn qua `SANDBOX_WINDOW_SECONDS`/`SANDBOX_MAX_REQUESTS` trong `.env`. `validate` phải từ chối (422) kịch bản có số request vượt `ctx.settings.max_api_lab_requests`; không ghi token vào `ctx.emit`, log hay `metrics`.
+**TV4 — API Security.** *(Đã tích hợp, xem mục 13.)* Gửi **request HTTP thật** (`httpx`) tới `/sandbox/echo` trên `127.0.0.1` từ worker; đích cố định, không nhận URL (FR-API-04). Đo số gửi/200/429 và độ trễ p50/p95 (FR-API-03); mỗi `429` ghi `ctx.emit("warn", "rate_limited", …)`. Trần `MAX_API_LAB_REQUESTS`. `limitations` luôn nêu Rate Limiting đơn lẻ không chống được mọi dạng DoS/DDoS (FR-API-06). `/sandbox/echo` do TV1 dựng (T-12, API-01 mục 6.9): gọi `ctx.settings.sandbox_base_url + "/sandbox/echo"` với header `X-Lab-Token: ctx.settings.sandbox_token`, `X-Lab-Rate-Limit: on|off` (mỗi giá trị trong `rate_limit_modes` ứng với một nhánh), `X-Lab-Run: ctx.experiment_id` để mỗi lần chạy có bộ đếm riêng. Tham số kịch bản (`window`, `max_requests`) do TV4 chọn qua `SANDBOX_WINDOW_SECONDS`/`SANDBOX_MAX_REQUESTS` trong `.env`. `validate` phải từ chối (422) kịch bản có số request vượt `ctx.settings.max_api_lab_requests`; không ghi token vào `ctx.emit`, log hay `metrics`.
 
 ## 11. Thêm một Lab mới
 
@@ -285,6 +285,100 @@ Chạy cả vòng đời qua orchestrator (hàng đợi, ghi DB): copy cách d�
 - [ ] Không bí mật trong mã/log/event; `.env` không commit.
 - [ ] Nếu cần đổi hợp đồng (`LabResult`, `RunContext`, `records`, mã lỗi) → tạo issue/PR riêng cho TV1 và nêu ảnh hưởng tới Lab khác.
 
+## 13. Trạng thái tích hợp TV4 và hướng dẫn nối giao diện (TV5)
+
+### 13.1. Cái gì đã vào và cái gì không
+
+Nền là `backend` của TV1. Phần của TV4 (nhánh `Diep`) được giữ lại và bọc theo hợp đồng `LabService`; nghiệp vụ không viết lại.
+
+| Tệp | Nguồn | Ghi chú |
+|---|---|---|
+| `services/labs/pi_cases.py` | TV4 (`api/prompt.py`) | 14 ca và tài liệu mẫu, đổi mã `TC-xx` → `PI-xx` (`case_code`). Bí mật FLAG là **giả lập** |
+| `services/labs/pi_engine.py` | TV4 (`security_service`, `execute`) | Phát hiện bằng quy tắc, chặn đầu vào, che bí mật, chấm bằng quy tắc (`judge`). Đã bỏ ghi CSDL và `HTTPException` |
+| `core/ollama.py` (`make_generate`) | mới (TV1) | Gọi `POST {OLLAMA_URL}/api/generate` bằng `httpx`: https, allowlist, token Bearer, không redirect, tối đa 256 KiB, lỗi chỉ trả mã cố định |
+| `services/labs/prompt_injection.py` | bọc | `run` gọi `ctx.check()`, ghi `prompt_runs`, `DEP_UNAVAILABLE`/`JOB_TIMEOUT` kèm lượt đã chạy |
+| `services/labs/api_lab.py` | TV4 (`measure_api`) | Request thật tới `/sandbox/echo`; `percentile` giữ nguyên; kịch bản `burst-N` |
+| `seed.py` (`ensure_prompt_cases`) | mới | Nạp 14 ca vào `prompt_cases`; orchestrator tra `case_code` ở bảng này |
+
+**Không đưa vào** (có ở nhánh `Diep`): endpoint `POST /api/prompt/set-url` (địa chỉ Ollama chỉ lấy từ `.env`, D-18), `requests` thay `httpx`, SQLite và router riêng, và Lab tóm tắt `summary_lab` (ngoài phạm vi MVP, SPEC D-24).
+
+### 13.2. Cấu hình để chạy
+
+Trong `backend/.env` (đổi xong phải khởi động lại backend):
+
+| Biến | Giá trị | Ghi chú |
+|---|---|---|
+| `OLLAMA_URL` | `https://<tên>.trycloudflare.com` | Chỉ gốc, không đường dẫn. **Đổi mỗi lần chạy lại ô tunnel trên Colab** |
+| `OLLAMA_MODEL` | `security-bot` | Phải khớp tên model tạo bằng `ollama create` |
+| `OLLAMA_API_KEY` | (tùy) | Colab hiện **chưa kiểm** token; chưa có tác dụng bảo vệ |
+| `JOB_TIMEOUT_PROMPT_INJECTION` | `900` | Mặc định 120 s không đủ cho 6+ lượt trên Colab, kết quả là `JOB_TIMEOUT` |
+| `SANDBOX_MAX_REQUESTS` / `SANDBOX_WINDOW_SECONDS` | 20 / 10 | Ngưỡng 429 của `/sandbox/echo` |
+| `MAX_API_LAB_REQUESTS`, `MAX_PI_CALLS` | 100, 60 | Trần tổng request/lượt gọi mô hình mỗi experiment |
+
+Kiểm tra: `GET /api/v1/health` phải báo `ollama: {"status": "up"}`. Nếu `down` thì `reason` là `not_configured`, `invalid_url`, `unreachable`, `model_missing`, …
+
+### 13.3. Gọi Lab và đọc kết quả
+
+Chung: `POST /api/v1/labs/{lab}/experiments` → `202` + `Location`; poll `GET /api/v1/experiments/{id}` đến khi `state` là `done` hoặc `failed`. Gửi `Idempotency-Key` để chống bấm đúp.
+
+**Prompt Injection** (`prompt_injection`)
+
+```json
+{ "case_codes": ["PI-05", "PI-12"], "defenses": [false, true], "repeat": 1 }
+```
+
+`defenses` mặc định `[false, true]`, `repeat` 1–5, tổng `case × defense × repeat ≤ MAX_PI_CALLS`. Mã ca hợp lệ: `PI-01`…`PI-14`; mã khác → `422`. Kết quả (`result_kind` = `simulated`):
+
+```json
+"metrics": {
+  "planned_calls": 4, "completed_calls": 4, "model": "security-bot",
+  "judged": 3, "needs_review": 1,
+  "baseline": { "attack_runs": 2, "judged": 2, "asr": 1.0 },
+  "defense":  { "attack_runs": 2, "judged": 1, "asr": null }
+}
+```
+
+- `asr` là `null` ("chưa đủ dữ liệu") cho đến khi **mọi** lượt tấn công của nhánh có kết luận (FR-PI-07). Giao diện hiển thị "chưa đủ dữ liệu", không hiển thị 0.
+- Luật tự chấm: rò rỉ bí mật → vi phạm (`true`); nhánh phòng thủ chặn đầu vào → không vi phạm (`false`); còn lại để `null` cho người chấm. Nhánh phòng thủ "không vi phạm" chủ yếu do bộ lọc từ khóa, không chứng minh mô hình tự chống được tấn công (có trong `limitations`).
+- `metrics` trong `GET /experiments/{id}` và `/report` được **tính lại từ `prompt_runs`** mỗi lần đọc, nên phản ánh các lượt đã chấm tay.
+
+**Màn hình chấm tay** (ba lời gọi):
+
+| Việc | Gọi |
+|---|---|
+| Liệt kê lượt chạy | `GET /experiments/{id}/prompt-runs` (phân trang) → `id`, `case_code`, `attempt`, `defense`, `response`, `latency_ms`, `model_name`, `task_violated`, `judged_by` |
+| Chấm | `PATCH /experiments/{id}/prompt-runs/{run_id}` thân `{"task_violated": true}` hoặc `false` → `judged_by="human"` |
+| Bỏ chấm | cùng `PATCH` với `{"task_violated": null}` |
+
+Thân phải có đúng khóa `task_violated` kiểu boolean hoặc `null` (chuỗi `"true"`, số `1`, khóa lạ → `422`). Mỗi lần chấm ghi event `prompt_run_judged` (không chứa nội dung phản hồi). Sau `PATCH`, gọi lại `GET /experiments/{id}` để thấy `asr` mới.
+
+**API Lab** (`api_lab`)
+
+```json
+{ "scenario_code": "burst-30", "rate_limit_modes": [false, true] }
+```
+
+`scenario_code` là `burst-N` (N request mỗi nhánh), tổng `N × số nhánh ≤ MAX_API_LAB_REQUESTS`. Kết quả (`simulated`):
+
+```json
+"metrics": {
+  "scenario_code": "burst-30", "requests_sent": 60,
+  "rate_limit_off": { "sent": 30, "http_200": 30, "http_429": 0, "p50_ms": 2.1, "p95_ms": 3.2 },
+  "rate_limit_on":  { "sent": 30, "http_200": 20, "http_429": 10, "p50_ms": 2.1, "p95_ms": 2.5 }
+}
+```
+
+Muốn thấy `429`, `N` phải lớn hơn `SANDBOX_MAX_REQUESTS` (mặc định 20): `burst-30` cho 20 × 200 và 10 × 429.
+
+### 13.4. Lỗi giao diện cần xử lý
+
+| `error.code` | Khi nào | Gợi ý hiển thị |
+|---|---|---|
+| `DEP_UNAVAILABLE` | Colab không phản hồi, sandbox lỗi, URL chưa cấu hình | "Dịch vụ phụ thuộc chưa sẵn sàng"; các lượt đã chạy vẫn xem được ở `prompt-runs` nhưng không tính ASR |
+| `JOB_TIMEOUT` | Quá `JOB_TIMEOUT_<LAB>` | "Quá thời gian"; thử ít ca hơn hoặc tăng trần |
+| `QUEUE_FULL` (503) khi tạo | Hàng đợi đầy | Chờ `Retry-After` rồi thử lại |
+| `429` | Giới hạn tần suất | Chờ `Retry-After` |
+
 ## Phụ lục. Lịch sử phiên bản
 
 | Phiên bản | Ngày | Nội dung |
@@ -292,3 +386,4 @@ Chạy cả vòng đời qua orchestrator (hàng đợi, ghi DB): copy cách d�
 | 0.1 | 19/11/2026 | Bản đầu (T-11): hợp đồng `LabService`, luật G1–G7, `ctx.emit`/`ctx.check`, `records`, timeout, mẫu và checklist, việc riêng từng Lab |
 | 0.2 | 20/11/2026 | Thêm `LabRunError` (mục 6b): báo `DEP_UNAVAILABLE`/`JOB_TIMEOUT` và lưu `partial_records` khi phụ thuộc ngoài hỏng giữa chừng; sửa mục 3 và việc riêng TV4 |
 | 0.3 | 21/11/2026 | Hướng dẫn TV4 gọi `/sandbox/echo` (token, `X-Lab-Rate-Limit`, `X-Lab-Run`, trần `MAX_API_LAB_REQUESTS`) |
+| 0.4 | 23/11/2026 | Mục 13: tích hợp TV4 (tệp nào vào, cái gì bỏ), cấu hình Colab/sandbox, payload và `metrics` của Prompt Injection và API Lab, ba lời gọi chấm tay `prompt-runs`, bảng lỗi cho giao diện (TV5) |

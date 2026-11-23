@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Tài liệu** | API-01 · Hợp đồng REST API (thay thế mục 8 của SPEC-01 v0.1) |
-| **Phiên bản** | 0.12 (lỗi `problem+json` trong OpenAPI; xem phụ lục) |
-| **Ngày** | 22/11/2026 |
+| **Phiên bản** | 0.13 (`prompt-runs` GET/PATCH; ASR tính lại; xem phụ lục) |
+| **Ngày** | 23/11/2026 |
 | **Người phụ trách** | TV1 |
 | **Đối tượng đọc** | TV2, TV3, TV4 (cài đặt `LabService`), TV5 (gọi API) |
 | **Nguồn chuẩn khi mâu thuẫn** | Tài liệu này; sau đó là `/openapi.json` do FastAPI sinh ra từ mã |
@@ -764,3 +764,4 @@ Tiêu chí hoàn thành của hợp đồng: `/openapi.json` sinh ra khớp tài
 | 0.10 | 21/11/2026 | Giới hạn tần suất API điều khiển theo người dùng (`control`, `heavy`; 429 + `Retry-After` + `RateLimit-*`); trần hàng đợi `MAX_QUEUED_JOBS` → `503 QUEUE_FULL`. Giới hạn đã biết: bộ đếm trong bộ nhớ (1 tiến trình); thân `multipart` của `POST /media-assets` được nhận xong trước khi kiểm hạn mức |
 | 0.11 | 22/11/2026 | `Idempotency-Key` cho `POST /labs/{lab}/experiments` (mục 8): phát lại trả cùng experiment + `Idempotent-Replayed`, khác Lab/thân → `422 IDEMPOTENCY_KEY_REUSED`; bảng `idempotency_keys` (migration 0003) |
 | 0.12 | 22/11/2026 | OpenAPI: mọi lỗi 4xx/5xx của `/api/v1` mô tả bằng `application/problem+json` (`ProblemDetails`), bỏ `HTTPValidationError`; không đổi hành vi API |
+| 0.13 | 23/11/2026 | Tích hợp TV4: `GET`/`PATCH /experiments/{id}/prompt-runs` đã cài (6.5); `links.prompt_runs` cho experiment `prompt_injection`; `metrics` của `GET /experiments/{id}` và `/report` tính lại từ `prompt_runs` (ASR `null` đến khi mọi lượt tấn công của nhánh có kết luận); `scenario_code` của `api_lab` là `burst-N`; mã ca Prompt Injection `PI-01…PI-14` |
